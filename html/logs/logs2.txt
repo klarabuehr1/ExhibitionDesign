@@ -1,0 +1,38 @@
+
+klara@Buero01 html % npm start
+
+> exhibition-audio-player@1.0.0 start
+> caffeinate -ims node server.js
+
+=================================================
+  Server läuft: http://localhost:3000
+  Im Browser öffnen und dann Geräte auswählen.
+  Beenden: Strg+C
+=================================================
+^C
+klara@Buero01 html % npm start
+
+> exhibition-audio-player@1.0.0 start
+> caffeinate -ims node server.js
+
+=================================================
+  Server läuft: http://localhost:3000
+  Im Browser öffnen und dann Geräte auswählen.
+  Beenden: Strg+C
+=================================================
+IPAD [iPad #1 18:02:28.265] SSE onopen – verbunden mit Station
+IPAD [iPad #2 18:02:28.265] SSE verbunden (connected)
+IPAD [iPad #5 18:02:32.422] rake-loop readyState=0 networkState=3 src=http://192.168.2.1:3000/Videos_Bilder_Station4/Rechen%20anheben.mp4
+IPAD [iPad #3 18:02:32.419] EMPFANGEN "sensor" | aktiver Screen=start {"type":"sensor","signal":"e"}
+IPAD [iPad #4 18:02:32.421] startRakeLoop() -> zeige Screen "rake"
+IPAD [iPad #6 18:02:32.423] ⚠️ rake-loop waiting (Buffering)
+IPAD [iPad #7 18:02:49.317] EMPFANGEN "sensor" | aktiver Screen=rake {"type":"sensor","signal":"e"}
+IPAD [iPad #8 18:02:49.319] startRakeLoop() -> zeige Screen "rake"
+IPAD [iPad #9 18:02:49.320] rake-loop readyState=0 networkState=3 src=http://192.168.2.1:3000/Videos_Bilder_Station4/Rechen%20anheben.mp4
+IPAD [#1 18:09:17.745] ipad.html geladen – Panel aktiv. URL=http://192.168.2.1:3000/ipad.html
+IPAD [#2 18:09:17.759] SSE onopen – verbunden mit Station
+IPAD [#3 18:09:17.759] SSE verbunden (connected)
+IPAD [#4 18:09:25.915] EMPFANGEN "sensor" | aktiver Screen=start {"type":"sensor","signal":"e"}
+IPAD [#5 18:09:25.916] startRakeLoop() -> zeige Screen "rake"
+IPAD [#6 18:09:25.917] rake-loop readyState=0 networkState=3 src=http://192.168.2.1:3000/Videos_Bilder_Station4/Rechen%20anheben.mp4
+IPAD [#7 18:09:25.919] ⚠️ rake-loop waiting (Buffering)
