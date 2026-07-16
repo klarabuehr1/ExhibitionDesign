@@ -115,8 +115,12 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // Datei einlesen und ausliefern
-  fs.readFile(filePath, (err, data) => {
+  // Datei ausliefern – MIT Unterstuetzung fuer HTTP Range Requests.
+  // WICHTIG fuer iOS/Safari: ein <video> spielt nur, wenn der Server
+  // Byte-Ranges (206 Partial Content) beantwortet. Ohne Range-Support
+  // bleibt das Video auf dem iPad schwarz (networkState=3, dauerndes
+  // "Buffering"), obwohl es am Desktop-Chrome funktioniert.
+  fs.stat(filePath, (err, stats) => {
     if (err) {
       if (err.code === "ENOENT") {
         res.writeHead(404, { "Content-Type": "text/plain" });
@@ -130,9 +134,40 @@ const server = http.createServer((req, res) => {
 
     const ext = path.extname(filePath).toLowerCase();
     const contentType = MIME_TYPES[ext] || "application/octet-stream";
+    const total = stats.size;
+    const range = req.headers.range;
 
-    res.writeHead(200, { "Content-Type": contentType });
-    res.end(data);
+    if (range) {
+      // z. B. "bytes=0-" oder "bytes=1000-2000"
+      const match = /bytes=(\d*)-(\d*)/.exec(range);
+      const start = match && match[1] ? parseInt(match[1], 10) : 0;
+      const end = match && match[2] ? parseInt(match[2], 10) : total - 1;
+
+      // Ungueltiger Bereich -> 416
+      if (isNaN(start) || isNaN(end) || start > end || end >= total) {
+        res.writeHead(416, { "Content-Range": `bytes */${total}` });
+        res.end();
+        return;
+      }
+
+      res.writeHead(206, {
+        "Content-Type": contentType,
+        "Content-Range": `bytes ${start}-${end}/${total}`,
+        "Accept-Ranges": "bytes",
+        "Content-Length": end - start + 1,
+        "Cache-Control": "no-cache",
+      });
+      fs.createReadStream(filePath, { start, end }).pipe(res);
+    } else {
+      // Kein Range angefordert: ganze Datei, aber Range-Faehigkeit ankuendigen
+      res.writeHead(200, {
+        "Content-Type": contentType,
+        "Accept-Ranges": "bytes",
+        "Content-Length": total,
+        "Cache-Control": "no-cache",
+      });
+      fs.createReadStream(filePath).pipe(res);
+    }
   });
 });
 
