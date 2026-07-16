@@ -160,7 +160,14 @@
   </div>
 
   <!-- 2b) Rechen anheben Anleitung -->
-  <div id="screen-rake" class="screen">
+  <!-- Endlos-Loop des Anleitungsvideos, laeuft bis die Rechen-Farberkennung
+       im Admin-Screen das Event 'rake_lifted' schickt. Video ist stumm
+       (Audio wird separat in index.html gehandhabt). -->
+  <div id="screen-rake" class="screen" style="padding: 0;">
+    <video id="rake-loop-video" loop muted playsinline preload="auto"
+           style="position: absolute; inset: 0; width: 100vw; height: 100vh; object-fit: contain; background: #000;">
+      <source src="Videos_Bilder_Station4/Rechen%20anheben.mp4" type="video/mp4">
+    </video>
   </div>
 
   <!-- 3) Minigame -->
@@ -281,6 +288,24 @@
       }
     }
     
+    // Anleitungsvideo "Rechen anheben" in Endlosschleife (Screen 2b).
+    // Startet beim 'intro'-Event und laeuft, bis 'rake_lifted' kommt.
+    const rakeLoopVideo = document.getElementById('rake-loop-video');
+
+    function startRakeLoop() {
+      showScreen('rake');
+      rakeLoopVideo.currentTime = 0;
+      const p = rakeLoopVideo.play();
+      if (p !== undefined) {
+        p.then(() => updateVideoDebug('✓ rake-loop spielt (Loop)'))
+         .catch(err => updateVideoDebug('✗ rake-loop Fehler: ' + err.message));
+      }
+    }
+
+    function stopRakeLoop() {
+      rakeLoopVideo.pause();
+    }
+
     function showEnd(resultText, lose) {
       console.log('🎬 showEnd called:', { resultText, lose });
       stopDemo();
@@ -398,25 +423,33 @@
         case 'reset':
           cancelRemoteProgress();
           clearInterval(endTimerId);
+          stopRakeLoop();
           debugStatus.textContent = '';
           showScreen('start');
           break;
 
         case 'intro':
-          videoCountdown.textContent = 'läuft …';
-          videoHint.textContent = '';
-          showScreen('video');
+          // Anleitungsvideo "Rechen anheben" in Endlosschleife zeigen.
+          // Laeuft, bis die Rechen-Farberkennung 'rake_lifted' meldet.
+          startRakeLoop();
+          break;
+
+        case 'rake_lifted':
+          // Rechen-Farberkennung hat das Anheben erkannt -> Loop stoppen,
+          // weiter zum Spiel (Intro-Phase, bis die Segment-Events kommen).
+          stopRakeLoop();
+          showScreen('game');
+          setPhase('intro');
+          phaseProgress.style.width = '0%';
           break;
 
         case 'game_start':
-          // Statt direkt zum Game: Zuerst der Rake-Anleitung Screen
-          const rakeVideo = document.getElementById('rake-video');
-          rakeVideo.style.display = 'block';
-          rakeVideo.style.visibility = 'visible';
-          rakeVideo.style.opacity = '1';
-          console.log('🎬 Rake-Video wird abgespielt (Station)');
-          playVideoOnIPad(rakeVideo);
-          showScreen('rake');
+          // Fallback, falls 'rake_lifted' verpasst wurde: Loop stoppen und
+          // sicher auf den Spiel-Screen (Intro) wechseln.
+          stopRakeLoop();
+          showScreen('game');
+          setPhase('intro');
+          phaseProgress.style.width = '0%';
           break;
 
         case 'segment':
@@ -426,9 +459,9 @@
           break;
 
         case 'action':
-          // Wenn Rake-Screen aktiv: Rechen wurde hochgehoben - starte Game
+          // Sicherheitsnetz: falls noch der Rake-Loop laeuft, jetzt beenden.
           if (screens.rake.classList.contains('active')) {
-            document.getElementById('rake-video').style.display = 'none';
+            stopRakeLoop();
             showScreen('game');
             setPhase('intro');
             phaseProgress.style.width = '0%';

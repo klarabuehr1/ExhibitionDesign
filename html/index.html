@@ -1126,6 +1126,9 @@
             }
             
             sendSerial('D');
+            // iPad sofort informieren: Rechen wurde angehoben -> Anleitungs-Loop
+            // (Screen 2b) stoppen und weiter zum Spiel.
+            sendIpadEvent('rake_lifted');
             // Bleibt auf 'waiting_rake' während Countdown!
             console.log('[LIFT-DETECTED] Countdown: 6 Sekunden bis Minispiel startet...');
             
