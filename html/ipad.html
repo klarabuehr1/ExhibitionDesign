@@ -131,6 +131,27 @@
       word-wrap: break-word;
       line-height: 1.4;
     }
+
+    /* On-Screen Log (unten, ueber alles gelegt) */
+    #ipad-log {
+      position: fixed;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      max-height: 40vh;
+      overflow: hidden;
+      background: rgba(0, 0, 0, 0.82);
+      color: #7CFC7C;
+      font-family: monospace;
+      font-size: 2.2vw;
+      line-height: 1.35;
+      padding: 1vh 1.5vw;
+      z-index: 99999;
+      white-space: pre-wrap;
+      word-break: break-word;
+      pointer-events: auto;
+    }
+    #ipad-log.hidden { display: none; }
   </style>
 </head>
 <body>
@@ -138,6 +159,11 @@
   <div id="conn-dot" title="Verbindung zur Station"></div>
   <div id="debug-status"></div>
   <div id="video-debug" style="display: none;"></div>
+
+  <!-- On-Screen Log direkt auf dem iPad (kein Terminal/DevTools noetig).
+       Zeigt die letzten Ereignisse: SSE-Verbindung, empfangene Events,
+       Video-Start/-Fehler. Zum Ausblenden: doppelt antippen. -->
+  <div id="ipad-log" title="Doppeltippen zum Aus-/Einblenden"></div>
 
   <!-- Video Container (außerhalb von screens) -->
   <video id="rake-video" preload="auto" style="position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; object-fit: contain; display: none; z-index: 1000; background: #000;" muted playsinline>
@@ -273,16 +299,28 @@
     }
 
     // -------------------------------------------------------------------------
-    // iPad-Logging: schreibt in die (Remote-)Konsole UND schickt die Zeile an
-    // den Server (/log), damit sie im "node server.js"-Terminal sichtbar ist.
+    // iPad-Logging: schreibt in die (Remote-)Konsole, ins On-Screen-Panel UND
+    // schickt die Zeile an den Server (/log), damit sie im Terminal sichtbar ist.
     // -------------------------------------------------------------------------
     let ipadLogSeq = 0;
+    const ipadLogEl = document.getElementById('ipad-log');
+    const ipadLogLines = [];
+
+    // Doppeltippen blendet das Log-Panel aus/ein
+    ipadLogEl.addEventListener('dblclick', () => ipadLogEl.classList.toggle('hidden'));
+
     function ipadLog(msg, obj) {
       ipadLogSeq++;
       const t = new Date().toISOString().substr(11, 12);
-      const line = `[iPad #${ipadLogSeq} ${t}] ${msg}` +
+      const line = `[#${ipadLogSeq} ${t}] ${msg}` +
                    (obj !== undefined ? ' ' + JSON.stringify(obj) : '');
       console.log(line);
+
+      // On-Screen anzeigen (letzte 14 Zeilen)
+      ipadLogLines.push(line);
+      if (ipadLogLines.length > 14) ipadLogLines.shift();
+      if (ipadLogEl) ipadLogEl.textContent = ipadLogLines.join('\n');
+
       // Best effort ans Terminal spiegeln (Fehler ignorieren)
       fetch('/log', {
         method: 'POST',
@@ -551,6 +589,7 @@
       };
     }
     connectToStation();
+    ipadLog('ipad.html geladen – Panel aktiv. URL=' + location.href);
 
     // =========================================================================
     // DEMO-MODUS (Tipp auf den Startscreen): lokaler Ablauf mit Touch-Erkennung,
