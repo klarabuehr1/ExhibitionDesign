@@ -173,10 +173,10 @@
     <source src="Videos_Bilder_Station4/Juhu.mp4" type="video/mp4">
   </video>
 
-  <!-- Erklaervideo (laeuft einmalig nach dem Countdown, danach Rake-Loop 2b).
-       Umlaut im Dateinamen ist als %C3%A4 kodiert. Stumm wegen iOS-Autoplay. -->
+  <!-- Erklaervideo (laeuft einmalig direkt nach dem Sensor, danach Rake-Loop 2b).
+       Stumm wegen iOS-Autoplay. -->
   <video id="erklaer-video" preload="auto" style="position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; object-fit: contain; display: none; z-index: 1000; background: #000;" muted playsinline>
-    <source src="Videos_Bilder_Station4/Erkl%C3%A4rvideo.mp4" type="video/mp4">
+    <source src="Videos_Bilder_Station4/Erklaervideo.mp4" type="video/mp4">
   </video>
 
   <!-- 1) Startscreen -->
@@ -414,11 +414,9 @@
     }
 
     // -------------------------------------------------------------------------
-    // STATIONSABLAUF: Countdown -> Erklaervideo (einmalig) -> Rake-Loop (2b)
+    // STATIONSABLAUF: Erklaervideo (einmalig) -> Rake-Loop (2b)
     // -------------------------------------------------------------------------
-    const EXPLAINER_COUNTDOWN_S = 3;   // Countdown vor dem Erklaervideo (0 = sofort)
     const erklaerVideo = document.getElementById('erklaer-video');
-    let explainerCountdownId = null;
 
     // Fehler beim Erklaervideo -> nicht haengen bleiben, direkt zum Rake-Loop
     erklaerVideo.addEventListener('error', () => {
@@ -429,14 +427,12 @@
     });
 
     function hideExplainer() {
-      clearInterval(explainerCountdownId);
-      explainerCountdownId = null;
       erklaerVideo.onended = null;
       erklaerVideo.pause();
       erklaerVideo.style.display = 'none';
     }
 
-    // Startet den kompletten Ablauf – nur vom Startscreen aus, damit wiederholte
+    // Startet den Ablauf – nur vom Startscreen aus, damit wiederholte
     // Sensor-Signale (Wackelkontakt) ihn nicht neu starten.
     function startStation4Flow() {
       if (!screens.start.classList.contains('active')) {
@@ -444,28 +440,8 @@
         return;
       }
       stopDemo();
-      startExplainerCountdown();
-    }
-
-    function startExplainerCountdown() {
       showScreen('video');
-      videoHint.textContent = '';
-      if (EXPLAINER_COUNTDOWN_S <= 0) { playExplainerVideo(); return; }
-
-      let remaining = EXPLAINER_COUNTDOWN_S;
-      ipadLog('Erklaer-Countdown startet (' + remaining + 's)');
-      videoCountdown.textContent = 'Erklärung startet in ' + remaining + ' s …';
-      clearInterval(explainerCountdownId);
-      explainerCountdownId = setInterval(() => {
-        remaining--;
-        if (remaining > 0) {
-          videoCountdown.textContent = 'Erklärung startet in ' + remaining + ' s …';
-        } else {
-          clearInterval(explainerCountdownId);
-          explainerCountdownId = null;
-          playExplainerVideo();
-        }
-      }, 1000);
+      playExplainerVideo();
     }
 
     function playExplainerVideo() {
@@ -604,20 +580,22 @@
         case 'reset':
           cancelRemoteProgress();
           clearInterval(endTimerId);
+          hideExplainer();
           stopRakeLoop();
           debugStatus.textContent = '';
           showScreen('start');
           break;
 
         case 'intro':
-          // Anleitungsvideo "Rechen anheben" in Endlosschleife zeigen.
-          // Laeuft, bis die Rechen-Farberkennung 'rake_lifted' meldet.
-          startRakeLoop();
+          // Stationsablauf starten: Erklaervideo -> Rake-Loop (2b).
+          // (Guard sorgt dafuer, dass ein laufendes Erklaervideo nicht abbricht.)
+          startStation4Flow();
           break;
 
         case 'rake_lifted':
-          // Rechen-Farberkennung hat das Anheben erkannt -> Loop stoppen,
+          // Rechen-Farberkennung hat das Anheben erkannt -> alles ausblenden,
           // weiter zum Spiel (Intro-Phase, bis die Segment-Events kommen).
+          hideExplainer();
           stopRakeLoop();
           showScreen('game');
           setPhase('intro');
@@ -625,8 +603,9 @@
           break;
 
         case 'game_start':
-          // Fallback, falls 'rake_lifted' verpasst wurde: Loop stoppen und
+          // Fallback, falls 'rake_lifted' verpasst wurde: alles ausblenden und
           // sicher auf den Spiel-Screen (Intro) wechseln.
+          hideExplainer();
           stopRakeLoop();
           showScreen('game');
           setPhase('intro');
