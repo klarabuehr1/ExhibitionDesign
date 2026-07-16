@@ -1,0 +1,12 @@
+{
+  "name": "exhibition-audio-player",
+  "version": "1.0.0",
+  "description": "Ausstellungs-App: 4 Stationen, 2 Audiogeräte, L/R-Kanal-Trennung.",
+  "main": "server.js",
+  "scripts": {
+    "start": "caffeinate -ims node server.js",
+    "server": "caffeinate -ims node server.js",
+    "audio-player": "node audio-player.js"
+  },
+  "dependencies": {}
+}

@@ -1,0 +1,1701 @@
+<!DOCTYPE html>
+<html lang="de">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Body Pose Detection + Sound Player</title>
+    <link rel="stylesheet" href="css/style.css" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.4/p5.min.js"></script>
+    <script src="https://unpkg.com/ml5@1/dist/ml5.min.js"></script>
+  </head>
+  <body>
+    <script>
+      let video;
+      let canvasEl;
+      let handPose;
+      let hands = [];
+      let handDetectionActive = false; // Hand-Erkennung nur während des Spiels
+      let cameraStatus = 'Kamera wird initialisiert...';
+
+      const OAK_CAMERA_LABEL_PATTERN = /(oak|depthai|luxonis)/i;
+
+      // Game state: 'waiting' = warte auf Rechen-Hochheben, 'playing' = Spiel läuft
+      let gameState = 'waiting';
+      let waitingStartTime = 0;
+      const MIN_WAIT_MS = 2000; // Screen wird mindestens 2 Sek. angezeigt
+
+      // Rechen Farberkennung
+      let rechenDetected = false;
+      let rechenCX = null;
+      let rechenCY = null;
+
+      // Centroid-Bewegungserkennung für Spielstart
+      // Prinzip: Centroid muss erst N Frames still sein (Referenz),
+      // dann wird auf Bewegung > Schwellwert geprüft.
+      let centroidHistory = [];
+      const CENTROID_HISTORY_LEN = 10;  // Frames für Glättung
+      let rechenStable = false;          // hat der Rechen lang genug still gelegen?
+      let stillFrames = 0;
+      const STILL_FRAMES_NEEDED = 25;   // ~0.8 Sek. Stille nötig bevor Bewegung geprüft wird
+      const STILL_THRESHOLD = 3;        // max. Pixel/Frame Bewegung = "still"
+      let refCX = null;
+      let refCY = null;
+      const MOVE_THRESHOLD = 20;        // Pixel Verschiebung von Referenz = "hochgehoben"
+
+      // Web Serial API
+      let serialPort = null;
+      let serialWriter = null;
+      let serialReader = null;
+      let serialConnected = false;
+      let serialReadLoopActive = false;
+      let lastSerialTx = '-';
+      let lastSerialRx = '-';
+      let lastSerialError = '-';
+      const SERIAL_BAUD_RATE = 115200;
+      const serialEncoder = new TextEncoder();
+      const serialDecoder = new TextDecoder();
+
+      // Edge-detection state (nur beim Übergang auslösen)
+      let prevTwoHands = false;
+      let prevRechenDetected = false;
+      const COOLDOWN = 1500;
+      let lastCPress = -1500;
+      let lastDPress = -1500;
+
+      // Abstandssensor Timer: wenn Z kommt, warten wir 23550ms + 15000ms delay auf Klopf (SOUND_A/B)
+      let knockTimeoutId = null;
+      const KNOCK_TIMEOUT_MS = 23550 + 20000; // Zeit bis zum Klopf-Screen + 10s Delay
+
+      // Station 4 Sensor Timer: wenn Y kommt, warten wir 70000ms auf Rechen hochheben
+      let station4SensorTimeoutId = null;
+      const STATION4_SENSOR_TIMEOUT_MS = 70000; // 70 Sekunden bis X gesendet wird wenn kein Rechen hochheben
+
+      // Web Audio Sound Player (aus "Sound html Code")
+      let audioContext;
+      let soundBuffers = {};
+      let soundArrayBuffers = {}; // Rohpuffer zum Neu-Dekodieren nach Context-Wechsel
+
+      // Pro-Station Panning: Station 1 = Lautsprecher links, Station 2 = rechts (interner Ausgang).
+      // Station 3/4 laufen ueber einen zweiten AudioContext, der per setSinkId()
+      // auf den externen USB-Stereo-Adapter geroutet wird.
+      let stationPanners = {};
+      let externalAudioContext;
+      let currentStation = 1;
+      let station1SequencePlaying = false; // Verhindert parallele Abläufe bei Station 1
+      const STATION2_ENTRY_DELAY_MS = 100; // Pause zwischen walking-out und walking-in
+
+      // ---------------------------------------------------------------------------
+      // STATION 1 – TIMING-KONFIGURATION (alle Zeiten hier zentral änderbar)
+      // ---------------------------------------------------------------------------
+      const REACTION_DELAY_MS = 500;         // Klopf-Sound -> Juhu/Oh-oh
+      const AHA_DELAY_MS = 5500;             // nur nach Sensor A: Juhu -> Aha
+      const STATION1_EXIT_DELAY_MS = 29800;  // nur nach Sensor A: Aha -> Walking-out (raus zu Station 2)
+
+      // Lautstärke pro Sound (1 = normal, 0 = stumm, >1 = Verstärkung)
+      const SOUND_VOLUMES = {
+        A: 10,
+        B: 4,
+        HUHU: 1,
+        JUHU: 1,
+        AHA: 1,
+        OHOH: 1,
+        WALKOUT: 5,
+      };
+
+      // ---------------------------------------------------------------------------
+      // STATION 4 – Minispiel Konfiguration
+      // ---------------------------------------------------------------------------
+      const STATION4_AHA_DELAY_MS = 10400; // Delay nach Stationsstart bis Aha-Sound
+      const STATION4_SENSOR_WAIT_MS = 500; // Abstandssensor ausgelöst -> Nach Sounds wird Rechen hochheben möglich
+      const STATION4_SUN_MOVE_THRESHOLD = 5; // Mindestbewegung für Sonnen-Phase (in Pixel)
+      // STILL_THRESHOLD (3px) ist für Stabilität vor Spielstart
+      // SUN_MOVE_THRESHOLD (10px) ist für deutliche Bewegung während Sonnen-Phase
+
+      // Videosegmente: start/end in Sekunden, type = 'intro'|'sun'|'rain'|'transition'|'outro'
+      // Sonne  → Kinder müssen mit dem Rechen über die Bohnen fahren
+      // Regen  → Kinder müssen beide Hände schützend über die Bohnen halten
+      // Neue Zeiten nach Video-Neuedition (weniger Phasen):
+      // Verlaengerte Aktionsphasen: 8s pro Sonne/Regen (vorher 5-6s)
+      const STATION4_SEGMENTS = [
+        { start: 0,    end: 3,    type: 'intro'      },
+        { start: 3,    end: 11,   type: 'sun'        },
+        { start: 11,   end: 12,   type: 'transition' },
+        { start: 12,   end: 20,   type: 'rain'       },
+        { start: 20,   end: 21,   type: 'transition' },
+        { start: 21,   end: 29,   type: 'sun'        },
+        { start: 29,   end: 30,   type: 'transition' },
+        { start: 30,   end: 38,   type: 'rain'       },
+        { start: 38,   end: 40,   type: 'transition' },
+        { start: 40,   end: 48,   type: 'sun'        },
+        { start: 48,   end: 55,   type: 'outro'      },
+      ];
+      // Spielende = Ende des letzten Segments (statt hartkodierter 42s)
+      const STATION4_VIDEO_END = STATION4_SEGMENTS[STATION4_SEGMENTS.length - 1].end;
+      // Regen-Phase: so viele gleichzeitig erkannte Haende reichen als "geschuetzt"
+      // (2 = beide Haende noetig; 1 ist deutlich robuster, weil die KI von oben
+      // gesehene Handruecken nicht immer beide gleichzeitig erkennt)
+      const STATION4_RAIN_MIN_HANDS = 1;
+
+      let station4State       = 'inactive'; // 'inactive'|'sensor_wait'|'intro_wait'|'waiting_rake'|'minigame'|'result'
+      let station4GameStartMs = 0;          // millis() bei Spielstart – läuft synchron zum Figma-Video
+      let station4GameResult  = null;       // null | 'win' | 'verschimmeln' | 'vertrocknet'
+      let station4LastSegIdx  = -1;
+      let station4ActionDone  = false;
+      let station4ResultSent  = false;
+      let station4LiftProcessing = false;   // Flag: verhindert mehrfaches Auslösen des Hochhebens
+
+      // Video-Key-Logik für 3 parallele Videos (neutral, positiv, negativ)
+      let station4VideoState = 'neutral';   // 'neutral' | 'positive' | 'negative'
+      let station4VideoKeys = {
+        neutral: '0',
+        positive: '1',
+        negative: '2'
+      };
+      let station4LastVideoState = null;    // Tracke letzten State um Doppel-Sends zu vermeiden
+      let station4NegativeVideoTimer = null; // Timer für 2 Sekunden nach Phasenbeginn
+      let station4CurrentSegmentStartTime = 0; // Wann hat die aktuelle Aktion-Phase angefangen
+
+      // --- iPad-Anbindung -----------------------------------------------------
+      // Schickt Spiel-Events an den lokalen Server (/event); der verteilt sie
+      // per Server-Sent Events an alle verbundenen iPads (ipad.html).
+      function sendIpadEvent(type, data = {}) {
+        fetch('/event', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ type, ...data }),
+        }).catch((e) => console.warn('[iPad-Event] nicht zustellbar:', e.message));
+      }
+
+      async function handleKnockCorrect() {
+        // Wenn Sequenz bereits läuft, zweiten Auslöser ignorieren
+        if (station1SequencePlaying) return;
+        station1SequencePlaying = true;
+        try {
+          console.log('[Station1] 🎵 Starte Sound-Sequenz: A → JUHU → AHA → WALKOUT');
+          await playSound('A', stationPanners[1]);
+          console.log('[Station1] Sound A fertig, warte ' + REACTION_DELAY_MS + 'ms');
+          await sleepMs(REACTION_DELAY_MS);
+          
+          await playSound('JUHU', stationPanners[1]);
+          console.log('[Station1] Sound JUHU fertig, warte ' + AHA_DELAY_MS + 'ms');
+          await sleepMs(AHA_DELAY_MS);
+          
+          await playSound('AHA', stationPanners[1]);
+          console.log('[Station1] Sound AHA fertig, warte ' + STATION1_EXIT_DELAY_MS + 'ms');
+          await sleepMs(STATION1_EXIT_DELAY_MS);
+          
+          await playSound('WALKOUT', stationPanners[1]);
+          console.log('[Station1] ✅ Alle Sounds fertig!');
+        } catch (e) {
+          console.error('[Station1] ❌ Fehler in Sound-Sequenz:', e);
+        } finally {
+          station1SequencePlaying = false;
+        }
+      }
+
+      async function handleKnockWrong(soundName) {
+        playSound(soundName, stationPanners[1]);
+        await sleepMs(REACTION_DELAY_MS);
+        playSound('OHOH', stationPanners[1]);
+      }
+
+      // Minimal Audio-Setup nur für Sound A und Sound B
+      function setupStationPanners() {
+        // Nur die interne Ausgabe für Station 1 und 4
+        if (!audioContext) {
+          audioContext = new AudioContext();
+        }
+        stationPanners[1] = audioContext.createStereoPanner();
+        stationPanners[1].pan.value = -1;
+        stationPanners[1].connect(audioContext.destination);
+        
+        stationPanners[4] = audioContext.createStereoPanner();
+        stationPanners[4].pan.value = 1;
+        stationPanners[4].connect(audioContext.destination);
+        
+        console.log('[AUDIO] Setup für Sound A/B und Station 4 bereit');
+      }
+
+      // Deaktiviert (externe Geräte nicht nötig)
+      async function refreshOutputDevices() {
+        console.log('[AUDIO] Externe Geräte-Suche deaktiviert');
+        setDeviceStatus('🔇 Nur interne Audio (Sound A/B). Externe Geräte deaktiviert.', '#ffb86b');
+        deviceSelect.elt.innerHTML = '';
+        internalDeviceSelect.elt.innerHTML = '';
+        deviceSelect.option('Externe Geräte deaktiviert', '');
+        internalDeviceSelect.option('Externe Geräte deaktiviert', '');
+      }
+
+      // Deaktiviert (externe Geräte nicht nötig)
+      async function connectExternalAdapter() {
+        console.log('[AUDIO] Externe Adapter deaktiviert');
+        setDeviceStatus('🔇 Externe Audio-Geräte deaktiviert. Nur interne Ausgabe aktiv.', '#ffb86b');
+        connectAdapterBtn.html('❌ Externe Geräte (deaktiviert)');
+      }
+
+      // Laden einer einzelnen Sounddatei per Name (Key für soundBuffers)
+      async function loadSound(name, url) {
+        const response = await fetch(url);
+        const arrayBuffer = await response.arrayBuffer();
+        soundArrayBuffers[name] = arrayBuffer;
+        soundBuffers[name] = await audioContext.decodeAudioData(arrayBuffer.slice(0));
+      }
+
+      // Nur Sound A und Sound B werden bei Bedarf neucodiert
+      async function redecodeSounds() {
+        // Deaktiviert - nur beim initialen Load wird decodiert
+        return Promise.resolve();
+      }
+
+      // Lädt alle Sounds für Station 1 (Sensor A/B + die eigentliche Klopf-Sequenz)
+      async function loadSounds() {
+        if (!audioContext) {
+          audioContext = new AudioContext();
+          setupStationPanners();
+        }
+        try {
+          await loadSound("A", "sound-a.wav");
+          await loadSound("B", "sound-b.wav");
+          await loadSound("HUHU", "Sounds/Station 1/Huhu V1.mp3");
+          await loadSound("JUHU", "Sounds/Station 1/Juhhu V2.m4a");
+          await loadSound("AHA", "Sounds/Station 1/Aha V1.mp3");
+          await loadSound("OHOH", "Sounds/Station 1/Oh oh V1.mp3");
+          await loadSound("WALKOUT", "Sounds/Station 1/walking out.mp3");
+          
+          // Station 4 Sounds
+          await loadSound("WALKIN", "Sounds/Station 4/walking in.mp3");
+          await loadSound("AHA4", "Sounds/Station 4/Aha V1.mp3");
+          await loadSound("OHOH4", "Sounds/Station 4/Oh oh V1.mp3");
+          await loadSound("JUHU4", "Sounds/Station 4/Juhhu V2.m4a");
+          
+          console.log('[AUDIO] Station-1-Sounds geladen (A, B, HUHU, JUHU, AHA, OHOH, WALKOUT)');
+          console.log('[AUDIO] Station-4-Sounds geladen (WALKIN, AHA4, OHOH4, JUHU4)');
+        } catch (e) {
+          console.error('[AUDIO] Fehler beim Laden von Sounds:', e);
+        }
+      }
+
+      // Spielt einen geladenen Sound über den angegebenen Panner (Station-Kanal) ab
+      function playSound(name, destinationNode) {
+        const targetNode = destinationNode || audioContext?.destination;
+        if (!targetNode) {
+          console.error('[AUDIO] ❌ Zielknoten fehlt für Sound:', name);
+          return Promise.resolve();
+        }
+        if (!soundBuffers[name]) {
+          console.error('[AUDIO] ❌ Sound nicht geladen: ' + name + ' (verfügbar: ' + Object.keys(soundBuffers).join(', ') + ')');
+          return Promise.resolve();
+        }
+        try {
+          const source = targetNode.context.createBufferSource();
+          source.buffer = soundBuffers[name];
+          const gainNode = targetNode.context.createGain();
+          gainNode.gain.value = SOUND_VOLUMES[name] ?? 1;
+          source.connect(gainNode);
+          gainNode.connect(targetNode);
+          source.start(0);
+          console.log('[AUDIO] ✅ Spiele Sound ab: ' + name + ' (Lautstärke: ' + gainNode.gain.value + ')');
+          return new Promise(resolve => { source.onended = resolve; });
+        } catch (e) {
+          console.error('[AUDIO] ❌ Fehler beim Abspielen von Sound:', name, e);
+          return Promise.resolve();
+        }
+      }
+
+      // Deaktiviert (nur Sound A/B über playSound direkt)
+      function playTapselAtStation(station, soundName) {
+        console.log('[AUDIO] playTapselAtStation deaktiviert: ' + soundName);
+        return Promise.resolve();
+      }
+
+      // Deaktiviert (Test-Töne nicht mehr nötig)
+      function playChannelTestTone(destinationNode, frequencyHz) {
+        console.log('[AUDIO] Test-Töne deaktiviert');
+        return Promise.resolve();
+      }
+
+      async function goToStation(station) {
+        if (station === currentStation) return;
+        
+        // Alte Station 4 Sensor-Timer abbrechen wenn man weg geht
+        if (currentStation === 4 && station4SensorTimeoutId) {
+          clearTimeout(station4SensorTimeoutId);
+          console.log('[goToStation] Station 4 Sensor-Timer abgebrochen beim Wechsel zu Station', station);
+          station4SensorTimeoutId = null;
+        }
+        
+        currentStation = station;
+        console.log('[goToStation] Wechsel zu Station:', station);
+        
+        // Station 4: Minispiel-Vorbereitung
+        if (station === 4) {
+          await handleStation4Start();
+        }
+      }
+
+      // Stellt sicher, dass Audio-Context für Sound A/B bereit ist
+      async function ensureAudioReady() {
+        if (!audioContext) {
+          await loadSounds();
+        }
+      }
+
+      async function testGoToStation(station) {
+        await ensureAudioReady();
+        goToStation(station);
+      }
+
+      async function testIncomingMessage(msg) {
+        await ensureAudioReady();
+        handleIncomingMessage(msg);
+      }
+
+      function handleIncomingMessage(msg) {
+        const gotoMatch = msg.match(/^GOTO([1-4])$/);
+
+        if (msg === 'z') {
+          // Abstandssensor 1 -> Station 1
+          console.log('✅ Abstandssensor 1 ausgelöst - starte 33550ms Timer für Klopf');
+          
+          // Wenn Timer bereits läuft (z.B. bei Wackelkontakt): ignorieren!
+          // Der erste Timer läuft weiter damit die Figma-Synchronisierung erhalten bleibt
+          if (knockTimeoutId) {
+            console.log('🔄 Station 1 Timer läuft bereits, Wackelkontakt ignoriert');
+            return;
+          }
+          
+          // Spiele HUHU Sound mit 500ms Delay ab
+          setTimeout(() => {
+            console.log('[Station1] Nach 500ms Delay: Spiele HUHU Sound ab');
+            playSound('HUHU', stationPanners[1]);
+          }, REACTION_DELAY_MS);
+          
+          // Timeout starten: wenn in 33550ms kein SOUND_A/B kommt -> 'X' senden
+          knockTimeoutId = setTimeout(() => {
+            console.log('⏰ Timer abgelaufen! Keine Reaktion innerhalb von 33550ms - sende X');
+            sendSerial('X');
+            knockTimeoutId = null;
+            
+            // Stoppe alle laufenden Sounds
+            if (audioContext) {
+              audioContext.close();
+              audioContext = new (window.AudioContext || window.webkitAudioContext)();
+              setupStationPanners(); // Re-setup panners nach Reset
+              console.log('[Station1-Audio] AudioContext resettet - Sounds gestoppt');
+            }
+          }, KNOCK_TIMEOUT_MS);
+          console.log('⏱️  Timer ID:', knockTimeoutId, 'Wartezeit:', KNOCK_TIMEOUT_MS + 'ms');
+        } else if (msg === 'e') {
+          // Abstandssensor 2 -> Station 4
+          console.log('✅ Abstandssensor 2 (E) ausgelöst - Station 4 starte 70000ms Timer');
+          
+          // Sende auch das Signal ans iPad über SSE
+          sendIpadEvent('sensor', { signal: 'e' });
+          
+          // Wenn Timer bereits läuft (z.B. bei Wackelkontakt): ignorieren!
+          // Der erste Timer läuft weiter damit die Figma-Synchronisierung erhalten bleibt
+          if (station4SensorTimeoutId) {
+            console.log('🔄 Station 4 Timer läuft bereits, Wackelkontakt ignoriert');
+            return;
+          }
+          
+          // Timeout starten: wenn in 70000ms kein Rechen hochheben -> 'U' senden
+          station4SensorTimeoutId = setTimeout(() => {
+            console.log('⏰ Station 4 Timer abgelaufen! Keine Reaktion innerhalb von 70000ms - sende U');
+            sendSerial('U');
+            station4SensorTimeoutId = null;
+          }, STATION4_SENSOR_TIMEOUT_MS);
+          console.log('⏱️  Station 4 Timer ID:', station4SensorTimeoutId, 'Wartezeit:', STATION4_SENSOR_TIMEOUT_MS + 'ms');
+          
+          handleStation4SensorTriggered();
+        } else if (msg === 'SOUND_A') {
+          // Klopf erkannt - Timer stoppen
+          if (knockTimeoutId) {
+            clearTimeout(knockTimeoutId);
+            console.log('🎵 SOUND_A erkannt - Timer abgebrochen (ID:', knockTimeoutId + ')');
+            knockTimeoutId = null;
+          }
+          handleKnockCorrect();
+        } else if (msg === 'SOUND_B') {
+          // Klopf erkannt - Timer stoppen
+          if (knockTimeoutId) {
+            clearTimeout(knockTimeoutId);
+            console.log('🎵 SOUND_B erkannt - Timer abgebrochen (ID:', knockTimeoutId + ')');
+            knockTimeoutId = null;
+          }
+          handleKnockWrong('B');
+        } else if (msg === 'SOUND_C') {
+          // Platzhalter: noch keine eigene Sound-C-Datei, sound-b.wav wiederverwenden.
+          if (knockTimeoutId) {
+            clearTimeout(knockTimeoutId);
+            console.log('🎵 SOUND_C erkannt - Timer abgebrochen (ID:', knockTimeoutId + ')');
+            knockTimeoutId = null;
+          }
+          handleKnockWrong('B');
+        } else if (gotoMatch) {
+          goToStation(Number(gotoMatch[1]));
+        }
+      }
+
+      function sleepMs(ms) {
+        return new Promise((resolve) => setTimeout(resolve, ms));
+      }
+
+      async function startSerialReadLoop() {
+        if (!serialPort?.readable || serialReadLoopActive) return;
+
+        serialReadLoopActive = true;
+        let readBuffer = '';
+
+        while (serialConnected && serialPort?.readable) {
+          serialReader = serialPort.readable.getReader();
+
+          try {
+            while (true) {
+              const { value, done } = await serialReader.read();
+              if (done) break;
+              if (!value) continue;
+
+              readBuffer += serialDecoder.decode(value, { stream: true });
+              const lines = readBuffer.split(/\r?\n/);
+              readBuffer = lines.pop() || '';
+
+              for (const line of lines) {
+                const msg = line.trim();
+                if (!msg) continue;
+                lastSerialRx = msg;
+                console.log('ESP -> WEB:', msg);
+
+                handleIncomingMessage(msg);
+              }
+            }
+          } catch (e) {
+            lastSerialError = 'RX Fehler';
+            console.error('Lesen fehlgeschlagen:', e);
+          } finally {
+            if (serialReader) {
+              serialReader.releaseLock();
+              serialReader = null;
+            }
+          }
+
+          await sleepMs(40);
+        }
+
+        serialReadLoopActive = false;
+      }
+
+      async function connectSerial() {
+        if (serialConnected) return;
+
+        if (!navigator.serial) {
+          lastSerialError = 'Web Serial wird vom Browser nicht unterstuetzt (Chrome/Edge nutzen)';
+          alert('Web Serial API nicht verfügbar. Bitte Chrome oder Edge verwenden.');
+          return;
+        }
+        try {
+          connectBtn.html('⏳ Verbinde...');
+
+          await loadSounds();
+
+          serialPort = await navigator.serial.requestPort();
+          await serialPort.open({ baudRate: SERIAL_BAUD_RATE });
+          serialWriter = serialPort.writable.getWriter();
+          serialConnected = true;
+          lastSerialError = '-';
+          startSerialReadLoop();
+
+          // Kurzer Ping zum Verbindungscheck im ESP-Log
+          await sendSerial('P');
+
+          connectBtn.html('✅ ESP32 verbunden');
+          connectBtn.style('background', '#2a9d2a');
+        } catch (e) {
+          lastSerialError = 'Port öffnen fehlgeschlagen: ' + (e?.message || e);
+          connectBtn.html('🔌 ESP32 verbinden');
+          connectBtn.style('background', '#444');
+          console.error('Serial Verbindung fehlgeschlagen:', e);
+        }
+      }
+
+      async function sendSerial(char) {
+        // Immer loggen – auch wenn kein ESP verbunden ist
+        lastSerialTx = char;
+        console.log('WEB -> ESP:', char);
+
+        if (!serialWriter) {
+          lastSerialError = 'Nicht verbunden (Signal nur geloggt)';
+          return;
+        }
+
+        try {
+          await serialWriter.write(serialEncoder.encode(char + '\n'));
+        } catch (e) {
+          lastSerialError = 'TX Fehler';
+          console.error('Senden fehlgeschlagen:', e);
+        }
+      }
+
+      let controlPanel;
+      let connectBtn;
+      let testCBtn;
+      let testDBtn;
+      let testGoto1Btn;
+      let testGoto2Btn;
+      let testZBtn;
+      let testYBtn;
+      let testSoundABtn;
+      let testSoundBBtn;
+      let testSoundCBtn;
+      let connectAdapterBtn;
+      let testGoto3Btn;
+      let testGoto4Btn;
+      let testStation3SpeakerBtn;
+      let testStation4SpeakerBtn;
+      let testStation1ToneBtn;
+      let testStation2ToneBtn;
+      let testStation3ToneBtn;
+      let testStation4ToneBtn;
+      let deviceSelect;
+      let internalDeviceSelect;
+      let refreshDevicesBtn;
+      let deviceStatusText;
+
+      function setDeviceStatus(message, color) {
+        if (!deviceStatusText) return;
+        deviceStatusText.html(message);
+        deviceStatusText.style('color', color || '#ddd');
+      }
+
+      // Baut eine beschriftete Zeile im Kontrollpanel (Label + Platz fuer Buttons).
+      function createControlSection(labelText) {
+        const row = createDiv();
+        row.parent(controlPanel);
+        row.style('display', 'flex');
+        row.style('flex-direction', 'row');
+        row.style('align-items', 'center');
+        row.style('flex-wrap', 'wrap');
+        row.style('gap', '8px');
+        row.style('padding', '6px 0');
+        row.style('border-top', '1px solid rgba(255,255,255,0.12)');
+
+        const label = createSpan(labelText);
+        label.parent(row);
+        label.style('font-size', '12px');
+        label.style('font-weight', 'bold');
+        label.style('color', '#8ecbff');
+        label.style('min-width', '170px');
+
+        return row;
+      }
+
+      function styleControlButton(btn, background) {
+        btn.style('padding', '7px 12px');
+        btn.style('font-size', '13px');
+        btn.style('cursor', 'pointer');
+        btn.style('border', 'none');
+        btn.style('border-radius', '5px');
+        btn.style('background', background || '#444');
+        btn.style('color', '#fff');
+      }
+
+      function preload() {
+        handPose = ml5.handPose();
+      }
+
+      async function findOakCameraDeviceId() {
+        if (!navigator.mediaDevices?.enumerateDevices) {
+          return null;
+        }
+
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const camera = devices.find(
+          (device) =>
+            device.kind === 'videoinput' && OAK_CAMERA_LABEL_PATTERN.test(device.label)
+        );
+
+        return camera?.deviceId ?? null;
+      }
+
+      async function initializeVideo() {
+        let permissionStream = null;
+
+        try {
+          permissionStream = await navigator.mediaDevices.getUserMedia({
+            video: true,
+            audio: false,
+          });
+
+          const oakDeviceId = await findOakCameraDeviceId();
+          permissionStream.getTracks().forEach((track) => track.stop());
+
+          const captureConstraints = oakDeviceId
+            ? {
+                audio: false,
+                video: {
+                  deviceId: { exact: oakDeviceId },
+                  width: 640,
+                  height: 480,
+                },
+              }
+            : {
+                audio: false,
+                video: {
+                  width: 640,
+                  height: 480,
+                },
+              };
+
+          cameraStatus = oakDeviceId
+            ? 'OAK-D Lite verbunden'
+            : 'OAK-D Lite nicht gefunden - Standardkamera aktiv';
+
+          video = createCapture(captureConstraints);
+          video.size(640, 480);
+          video.hide();
+          // Hand-Erkennung wird nur gestartet, wenn das Spiel beginnt
+          // (nicht beim Hochheben des Rechens)
+        } catch (error) {
+          if (permissionStream) {
+            permissionStream.getTracks().forEach((track) => track.stop());
+          }
+          cameraStatus = 'Kamerazugriff fehlgeschlagen';
+          console.error('Kamera konnte nicht initialisiert werden:', error);
+        }
+      }
+
+      function setup() {
+        canvasEl = createCanvas(640, 480);
+        waitingStartTime = millis();
+        initializeVideo();
+        
+        // Station 4 automatisch starten
+        currentStation = 4;
+        station4State = 'waiting_rake';
+        gameState = 'waiting';
+
+        controlPanel = createDiv();
+        controlPanel.style('position', 'fixed');
+        controlPanel.style('top', '0');
+        controlPanel.style('left', '0');
+        controlPanel.style('right', '0');
+        controlPanel.style('z-index', '9999');
+        controlPanel.style('background', 'rgba(20,20,20,0.94)');
+        controlPanel.style('color', '#fff');
+        controlPanel.style('font-family', 'sans-serif');
+        controlPanel.style('padding', '4px 14px 10px 14px');
+        controlPanel.style('box-sizing', 'border-box');
+
+        // --- Verbindung ---
+        const connectionRow = createControlSection('🔌 Verbindung');
+        connectBtn = createButton('ESP32 verbinden');
+        connectBtn.parent(connectionRow);
+        connectBtn.mousePressed(connectSerial);
+        styleControlButton(connectBtn, '#2a6cd4');
+
+        // --- Station 1: Klopf-Sequenz ---
+        const station1Row = createControlSection('🥥 Station 1 (Ernte, Test)');
+        testZBtn = createButton('📡 z – Abstandssensor 1 (Station 1)');
+        testZBtn.parent(station1Row);
+        testZBtn.mousePressed(() => testIncomingMessage('z'));
+        styleControlButton(testZBtn);
+
+        testYBtn = createButton('📡 e – Abstandssensor 2 (Station 4)');
+        testYBtn.parent(station1Row);
+        testYBtn.mousePressed(() => testIncomingMessage('e'));
+        styleControlButton(testYBtn);
+
+        testSoundABtn = createButton('SOUND_A – richtig');
+        testSoundABtn.parent(station1Row);
+        testSoundABtn.mousePressed(() => testIncomingMessage('SOUND_A'));
+        styleControlButton(testSoundABtn, '#2a9d2a');
+
+        testSoundBBtn = createButton('SOUND_B – falsch');
+        testSoundBBtn.parent(station1Row);
+        testSoundBBtn.mousePressed(() => testIncomingMessage('SOUND_B'));
+        styleControlButton(testSoundBBtn, '#a63d3d');
+
+        testSoundCBtn = createButton('SOUND_C – falsch');
+        testSoundCBtn.parent(station1Row);
+        testSoundCBtn.mousePressed(() => testIncomingMessage('SOUND_C'));
+        styleControlButton(testSoundCBtn, '#a63d3d');
+
+        // --- Bo Stationswechsel ---
+        const gotoRow = createControlSection('🐜 Bo Stationswechsel (Test)');
+        testGoto1Btn = createButton('Station 1');
+        testGoto1Btn.parent(gotoRow);
+        testGoto1Btn.mousePressed(() => testGoToStation(1));
+        styleControlButton(testGoto1Btn);
+
+        testGoto2Btn = createButton('Station 2');
+        testGoto2Btn.parent(gotoRow);
+        testGoto2Btn.mousePressed(() => testGoToStation(2));
+        styleControlButton(testGoto2Btn);
+
+        testGoto3Btn = createButton('Station 3');
+        testGoto3Btn.parent(gotoRow);
+        testGoto3Btn.mousePressed(() => testGoToStation(3));
+        styleControlButton(testGoto3Btn);
+
+        testGoto4Btn = createButton('Station 4');
+        testGoto4Btn.parent(gotoRow);
+        testGoto4Btn.mousePressed(() => testGoToStation(4));
+        styleControlButton(testGoto4Btn);
+
+        testStation1ToneBtn = createButton('Ton S1 links');
+        testStation1ToneBtn.parent(gotoRow);
+        testStation1ToneBtn.mousePressed(() => playChannelTestTone(stationPanners[1], 420));
+        styleControlButton(testStation1ToneBtn);
+
+        testStation2ToneBtn = createButton('Ton S2 rechts');
+        testStation2ToneBtn.parent(gotoRow);
+        testStation2ToneBtn.mousePressed(() => playChannelTestTone(stationPanners[2], 680));
+        styleControlButton(testStation2ToneBtn);
+
+        // --- Station 4: Kamera Test-Signale an ESP ---
+        const station4Row = createControlSection('📷 Station 4 (Kamera, an ESP senden)');
+        testCBtn = createButton('C – 2 Hände erkannt');
+        testCBtn.parent(station4Row);
+        testCBtn.mousePressed(() => sendSerial('C'));
+        styleControlButton(testCBtn);
+
+        testDBtn = createButton('D – Rechen erkannt');
+        testDBtn.parent(station4Row);
+        testDBtn.mousePressed(() => sendSerial('D'));
+        styleControlButton(testDBtn);
+
+        const testResultBtnsRow = createControlSection('📊 Station 4 Ergebnis-Test');
+        const testWBtn = createButton('📤 Test: W (Gewonnen)');
+        testWBtn.parent(testResultBtnsRow);
+        testWBtn.mousePressed(() => {
+          console.log('[TEST] Manuell W gesendet');
+          sendSerial('W');
+        });
+        styleControlButton(testWBtn, '#2a9d2a');
+
+        const testMBtn = createButton('📤 Test: M (Verschimmelt)');
+        testMBtn.parent(testResultBtnsRow);
+        testMBtn.mousePressed(() => {
+          console.log('[TEST] Manuell M gesendet');
+          sendSerial('M');
+        });
+        styleControlButton(testMBtn, '#ff9800');
+
+        const testVBtn = createButton('📤 Test: V (Vertrocknet)');
+        testVBtn.parent(testResultBtnsRow);
+        testVBtn.mousePressed(() => {
+          console.log('[TEST] Manuell V gesendet');
+          sendSerial('V');
+        });
+        styleControlButton(testVBtn, '#f44336');
+
+        const station4GameTestBtn = createButton('🎮 Minispiel starten (Test)');
+        station4GameTestBtn.parent(testResultBtnsRow);
+        station4GameTestBtn.mousePressed(async () => {
+          await ensureAudioReady();
+          currentStation = 4;
+          station4State = 'waiting_rake';
+          gameState = 'waiting'; // Zeige Warte-Screen statt direkt zu starten
+          rechenStable = false;
+          stillFrames = 0;
+          console.log('[TEST] Station 4 Warte-Screen angezeigt – Rechen hochheben zum Starten!');
+        });
+        styleControlButton(station4GameTestBtn, '#7a3db8');
+
+        // --- Audio-Ausgaenge (alle Stationen) ---
+        const adapterRow = createControlSection('🎧 Audio-Ausgaenge (Station 1–4)');
+        refreshDevicesBtn = createButton('🔄 Geräte aktualisieren');
+        refreshDevicesBtn.parent(adapterRow);
+        refreshDevicesBtn.mousePressed(refreshOutputDevices);
+        styleControlButton(refreshDevicesBtn);
+
+        internalDeviceSelect = createSelect();
+        internalDeviceSelect.parent(adapterRow);
+        internalDeviceSelect.option('S1/2 – Gerät wählen', '');
+        internalDeviceSelect.style('padding', '7px');
+        internalDeviceSelect.style('font-size', '13px');
+        internalDeviceSelect.style('min-width', '200px');
+
+        deviceSelect = createSelect();
+        deviceSelect.parent(adapterRow);
+        deviceSelect.option('S3/4 – Gerät wählen', '');
+        deviceSelect.style('padding', '7px');
+        deviceSelect.style('font-size', '13px');
+        deviceSelect.style('min-width', '200px');
+
+        connectAdapterBtn = createButton('Als Adapter verbinden');
+        connectAdapterBtn.parent(adapterRow);
+        connectAdapterBtn.mousePressed(connectExternalAdapter);
+        styleControlButton(connectAdapterBtn, '#2a6cd4');
+
+        testStation3SpeakerBtn = createButton('🔊 Test Station 3 (links)');
+        testStation3SpeakerBtn.parent(adapterRow);
+        testStation3SpeakerBtn.mousePressed(() => playTapselAtStation(3, 'HUHU'));
+        styleControlButton(testStation3SpeakerBtn);
+
+        testStation4SpeakerBtn = createButton('🔊 Test Station 4 (rechts)');
+        testStation4SpeakerBtn.parent(adapterRow);
+        testStation4SpeakerBtn.mousePressed(() => playTapselAtStation(4, 'HUHU'));
+        styleControlButton(testStation4SpeakerBtn);
+
+        testStation3ToneBtn = createButton('Ton S3 links');
+        testStation3ToneBtn.parent(adapterRow);
+        testStation3ToneBtn.mousePressed(() => playChannelTestTone(stationPanners[3], 420));
+        styleControlButton(testStation3ToneBtn);
+
+        testStation4ToneBtn = createButton('Ton S4 rechts');
+        testStation4ToneBtn.parent(adapterRow);
+        testStation4ToneBtn.mousePressed(() => playChannelTestTone(stationPanners[4], 680));
+        styleControlButton(testStation4ToneBtn);
+
+        deviceStatusText = createDiv('Noch nicht gescannt. Auf "Geraete aktualisieren" klicken.');
+        deviceStatusText.parent(adapterRow);
+        deviceStatusText.style('font-size', '12px');
+        deviceStatusText.style('line-height', '1.3');
+        deviceStatusText.style('color', '#ddd');
+        deviceStatusText.style('padding', '6px 0 0 0');
+        deviceStatusText.style('flex-basis', '100%');
+
+        // Canvas unter das Kontrollpanel schieben, damit nichts verdeckt wird.
+        canvasEl.position(0, controlPanel.elt.offsetHeight + 10);
+      }
+
+      function getHandOrientation(hand) {
+        let wrist    = hand.keypoints[0];
+        let indexMCP = hand.keypoints[5];
+        let pinkyMCP = hand.keypoints[17];
+        let crossZ = (indexMCP.x - wrist.x) * (pinkyMCP.y - wrist.y)
+                   - (indexMCP.y - wrist.y) * (pinkyMCP.x - wrist.x);
+        let isRight = hand.handedness === "Left";
+        if (isRight) return crossZ > 0 ? "Außenfläche" : "Innenfläche";
+        else         return crossZ < 0 ? "Außenfläche" : "Innenfläche";
+      }
+
+      // Grüne Pixel zählen und Centroid berechnen
+      let lastRachenDebugCount = 0; // Für Debug-Anzeige
+      function detectRechen() {
+        video.loadPixels();
+        let count = 0;
+        let sumX = 0;
+        let sumY = 0;
+
+        // Weniger strenge Farberkennung: akzeptiert auch weniger grüne Rechen
+        for (let i = 0; i < video.pixels.length; i += 16) {
+          let r = video.pixels[i];
+          let g = video.pixels[i + 1];
+          let b = video.pixels[i + 2];
+          // Lockere Schwellwerte: nur Grün muss deutlich höher sein als Rot/Blau
+          if (g > 80 && g > r + 30 && g > b + 30) {
+            count++;
+            let idx = i / 4;
+            sumX += idx % video.width;
+            sumY += Math.floor(idx / video.width);
+          }
+        }
+
+        lastRachenDebugCount = count;
+        rechenDetected = count >= 8; // Reduziert von 15 auf 8 Pixel
+        if (rechenDetected) {
+          rechenCX = sumX / count;
+          rechenCY = sumY / count;
+        } else {
+          rechenCX = null;
+          rechenCY = null;
+        }
+      }
+
+      let currentAvgMove = 0;
+      let lastRechenCX = null; // Speichere letzte bekannte Position
+      let lastRechenCY = null;
+      let rachenMissingFrames = 0; // Zhle Frames, in denen Rechen nicht erkannt wird
+      const RECHEN_MISSING_TOLERANCE = 4; // Toleriere bis zu 4 Frames ohne Erkennung
+
+      function updateCentroidHistory() {
+        // Diese Funktion misst NUR die aktuelle Bewegung während des Spiels
+        // (für die Sonnen-Phase Erkennung)
+        
+        if (!rechenDetected) {
+          // Kurze Aussetzer tolerieren: bei schneller Rechen-Bewegung verschwimmt
+          // das Gruen (Motion Blur) und die Farberkennung faellt fuer einzelne
+          // Frames aus. Frueher wurde hier sofort resettet - dadurch hat
+          // ausgerechnet schnelles Rechen die Bewegungsmessung sabotiert.
+          rachenMissingFrames++;
+          if (rachenMissingFrames > RECHEN_MISSING_TOLERANCE) {
+            centroidHistory = [];
+            currentAvgMove = 0;
+          }
+          return;
+        }
+        rachenMissingFrames = 0;
+
+        // Speichere aktuelle Position
+        centroidHistory.push({ x: rechenCX, y: rechenCY });
+        if (centroidHistory.length > CENTROID_HISTORY_LEN) centroidHistory.shift();
+        
+        if (centroidHistory.length < CENTROID_HISTORY_LEN) return;
+        
+        // Berechne durchschnittliche Bewegung
+        let totalMove = 0;
+        for (let i = 1; i < centroidHistory.length; i++) {
+          let dx = centroidHistory[i].x - centroidHistory[i - 1].x;
+          let dy = centroidHistory[i].y - centroidHistory[i - 1].y;
+          totalMove += Math.sqrt(dx * dx + dy * dy);
+        }
+        currentAvgMove = totalMove / (centroidHistory.length - 1);
+      }
+
+      let lastLiftDebugTime = 0;
+      let lastIpadStatusMs = 0; // Drosselung der Live-Status-Events ans iPad
+
+      function checkRechenLift() {
+        const now = millis();
+        
+        if (!rechenDetected) {
+          if (now - lastLiftDebugTime > 1000) {
+            console.log('[DEBUG-LIFT] ❌ Rechen nicht erkannt');
+            lastLiftDebugTime = now;
+          }
+          return false;
+        }
+
+        // PHASE 1: KALIBRIERUNG (bis rechenStable = true)
+        if (!rechenStable) {
+          // Sampel die Position
+          centroidHistory.push({ x: rechenCX, y: rechenCY });
+          if (centroidHistory.length > CENTROID_HISTORY_LEN) centroidHistory.shift();
+          
+          if (centroidHistory.length < CENTROID_HISTORY_LEN) {
+            console.log('[DEBUG-LIFT] Kalibrierung: ' + centroidHistory.length + '/' + CENTROID_HISTORY_LEN);
+            return false;
+          }
+          
+          // Prüfe Stabilität
+          let totalMove = 0;
+          for (let i = 1; i < centroidHistory.length; i++) {
+            let dx = centroidHistory[i].x - centroidHistory[i - 1].x;
+            let dy = centroidHistory[i].y - centroidHistory[i - 1].y;
+            totalMove += Math.sqrt(dx * dx + dy * dy);
+          }
+          currentAvgMove = totalMove / (centroidHistory.length - 1);
+          
+          if (currentAvgMove < STILL_THRESHOLD) {
+            stillFrames++;
+            if (stillFrames >= STILL_FRAMES_NEEDED) {
+              rechenStable = true;
+              refCX = rechenCX;
+              refCY = rechenCY;
+              centroidHistory = [];
+              stillFrames = 0;
+              console.log('[DEBUG-LIFT] ✅ Kalibrierung fertig! Referenzposition: ' + refCX.toFixed(0) + '/' + refCY.toFixed(0));
+            }
+          } else {
+            stillFrames = 0;
+          }
+          return false;
+        }
+
+        // PHASE 2: BEREIT ZUM HOCHHEBEN (rechenStable = true)
+        // Direkte Distanz-Messung ohne centroidHistory
+        let dx = rechenCX - refCX;
+        let dy = rechenCY - refCY;
+        let distance = Math.sqrt(dx * dx + dy * dy);
+        
+        console.log('[DEBUG-LIFT] Hochheben-Check: Distanz=' + distance.toFixed(1) + 'px (Threshold: ' + MOVE_THRESHOLD + 'px)');
+        
+        if (distance > MOVE_THRESHOLD) {
+          console.log('[DEBUG-LIFT] ✅ HOCHHEBEN ERKANNT!');
+          return true;
+        }
+        
+        return false;
+      }
+
+      function draw() {
+        background(0);
+
+        if (!video) {
+          drawCameraStatus();
+          return;
+        }
+
+        detectRechen();
+        updateCentroidHistory();
+
+        image(video, 0, 0, width, height); // Kamera immer zeigen
+
+        if (currentStation === 4 && (station4State === 'minigame' || station4State === 'waiting_rake' || station4State === 'sensor_wait' || station4State === 'intro_wait')) {
+          // Station 4: "Rechen hochheben" ist während sensor_wait/intro_wait/waiting_rake durchgehend sichtbar.
+          // Eine erkannte Geste löst aber erst in waiting_rake tatsächlich etwas aus (siehe drawWaitingScreen()).
+          if (station4State === 'minigame') {
+            drawStation4Game(); // HUD-Overlay auf Kamera-Feed
+          } else {
+            drawWaitingScreen();
+          }
+        } else if (gameState === 'waiting') {
+          drawWaitingScreen();
+        } else {
+          drawPlayingScreen();
+        }
+
+        if (serialConnected) {
+          noStroke();
+          fill(0, 200, 0);
+          circle(width - 14, 14, 14);
+        }
+
+        if (cameraStatus !== 'OAK-D Lite verbunden') {
+          drawCameraStatus();
+        }
+
+        drawSerialStatus();
+        drawRechenDebug(); // Debug-Anzeige für Rechen-Erkennung
+      }
+
+      function drawCameraStatus() {
+        noStroke();
+        fill(0, 0, 0, 160);
+        rect(0, height - 28, width, 28);
+        fill(255);
+        textSize(14);
+        textAlign(LEFT, CENTER);
+        text(cameraStatus, 10, height - 14);
+      }
+
+      function drawSerialStatus() {
+        noStroke();
+        fill(0, 0, 0, 170);
+        rect(0, 72, width, 24);
+        fill(255);
+        textSize(13);
+        textAlign(LEFT, CENTER);
+
+        let status = 'TX: ' + lastSerialTx + ' | RX: ' + lastSerialRx;
+        if (!serialConnected) {
+          status += ' | Bitte auf ESP32 verbinden klicken';
+        }
+        if (lastSerialError !== '-') {
+          status += ' | ' + lastSerialError;
+        }
+
+        text(status, 10, 84);
+      }
+
+      // Debug-Anzeige für Rechen-Erkennung
+      function drawRechenDebug() {
+        noStroke();
+        fill(0, 0, 0, 150);
+        rect(0, 96, 350, 75);
+        fill(rechenDetected ? color(0, 255, 0) : (rachenMissingFrames <= RECHEN_MISSING_TOLERANCE ? color(255, 200, 0) : color(200, 100, 100)));
+        textSize(12);
+        textAlign(LEFT, TOP);
+        text('[RECHEN DEBUG]', 8, 100);
+        fill(255);
+        text('Erkannt: ' + (rechenDetected ? 'JA' : 'NEIN (Frame: ' + rachenMissingFrames + '/' + RECHEN_MISSING_TOLERANCE + ')'), 8, 115);
+        text('Pixel-Count: ' + lastRachenDebugCount, 8, 128);
+        text('Position: ' + (lastRechenCX ? lastRechenCX.toFixed(0) + '/' + lastRechenCY.toFixed(0) : 'N/A'), 8, 141);
+        text('Bewegung: ' + currentAvgMove.toFixed(1) + 'px | Stabil: ' + (rechenStable ? 'JA' : 'NEIN') + ' (' + stillFrames + '/' + STILL_FRAMES_NEEDED + ')', 8, 154);
+      }
+
+      function drawWaitingScreen() {
+        fill(0, 0, 0, 140);
+        noStroke();
+        rect(0, 0, width, height);
+
+        if (checkRechenLift()) {
+          // Während Station 4 auf den Sensor/das Figma-Intro wartet: Geste komplett ignorieren
+          // (kein Signal, kein State-Wechsel) - der Screen bleibt aber unverändert sichtbar.
+          if (currentStation === 4 && (station4State === 'sensor_wait' || station4State === 'intro_wait')) {
+            return;
+          }
+
+          // Verhindere mehrfaches Auslösen
+          if (station4LiftProcessing) return;
+          station4LiftProcessing = true;
+
+          console.log('[LIFT-DETECTED] Rechen angehoben erkannt!');
+          console.log('[LIFT-DEBUG] currentStation:', currentStation, '| station4State:', station4State);
+
+          if (currentStation === 4 && station4State === 'waiting_rake') {
+            console.log('[LIFT-DETECTED] Station 4, sende D...');
+            
+            // Abbrechen des 70000ms Sensor-Timeouts wenn Rechen hochgehoben wird
+            if (station4SensorTimeoutId) {
+              clearTimeout(station4SensorTimeoutId);
+              console.log('🎯 Rechen hochgehoben! Station 4 Sensor-Timer abgebrochen (ID:', station4SensorTimeoutId + ')');
+              station4SensorTimeoutId = null;
+            }
+            
+            sendSerial('D');
+            // Bleibt auf 'waiting_rake' während Countdown!
+            console.log('[LIFT-DETECTED] Countdown: 6 Sekunden bis Minispiel startet...');
+            
+            // Nach 6 Sekunden: Minispiel starten
+            setTimeout(() => {
+              console.log('[LIFT-DETECTED] Nach 6 Sekunden: Minispiel startet JETZT!');
+              station4State = 'minigame';
+              gameState = 'playing';
+              startHandDetection(); // Starte Hand-Erkennung wenn Spiel beginnt
+              sendIpadEvent('game_start');
+              station4GameStartMs = millis();
+              station4LastSegIdx = -1;
+              station4ActionDone = false;
+              station4ResultSent = false;
+              station4GameResult = null;
+              console.log('[LIFT-DETECTED] ✅ Minispiel gestartet!');
+              station4LiftProcessing = false; // Reset nach Spielstart
+            }, 6000);
+          } else {
+            console.log('[LIFT-DETECTED] Andere Station oder falscher State, sende E...');
+            sendSerial('E');
+            station4LiftProcessing = false; // Reset für andere States
+          }
+          return;
+        }
+
+        // Centroid + Stabilitätsanzeige (Debug-Hilfe beim Einrichten)
+        if (rechenDetected && rechenCX !== null) {
+          let col = rechenStable ? color(0, 255, 100) : color(255, 200, 0);
+          noFill();
+          stroke(col);
+          strokeWeight(2);
+          circle(rechenCX, rechenCY, 30);
+          if (refCX !== null) {
+            stroke(255, 80, 80);
+            strokeWeight(1);
+            line(refCX, refCY, rechenCX, rechenCY);
+          }
+        }
+
+        // Statustext
+        textAlign(CENTER, CENTER);
+        noStroke();
+        fill(255);
+        textSize(28);
+        text("Rechen hochheben", width / 2, height / 2 - 20);
+        textSize(18);
+        fill(200);
+        text("um das Spiel zu starten", width / 2, height / 2 + 20);
+
+        // Statusleiste unten
+        let statusText;
+        let statusColor;
+        if (!rechenDetected) {
+          statusText = "Kein Rechen erkannt";
+          statusColor = color(120, 120, 120, 200);
+        } else if (!rechenStable) {
+          let progress = Math.round((stillFrames / STILL_FRAMES_NEEDED) * 100);
+          statusText = "Rechen erkannt – kurz stillhalten… " + progress + "%";
+          statusColor = color(200, 140, 0, 200);
+        } else {
+          statusText = "Bereit – jetzt hochheben!";
+          statusColor = color(0, 180, 0, 200);
+        }
+
+        noStroke();
+        fill(statusColor);
+        rect(0, height - 40, width, 40);
+        fill(255);
+        textSize(16);
+        textAlign(LEFT, CENTER);
+        text(statusText, 12, height - 20);
+      }
+
+      function drawPlayingScreen() {
+        if (rechenDetected) {
+          noFill();
+          stroke(0, 200, 0);
+          strokeWeight(3);
+          rect(width - 44, 44, 34, 34, 4);
+          fill(0, 200, 0);
+          noStroke();
+          textSize(22);
+          textAlign(CENTER, CENTER);
+          text("🟢", width - 27, 61);
+        }
+
+        for (let i = 0; i < hands.length; i++) {
+          let hand = hands[i];
+          let connections = handPose.getConnections();
+          for (let j = 0; j < connections.length; j++) {
+            let ptA = hand.keypoints[connections[j][0]];
+            let ptB = hand.keypoints[connections[j][1]];
+            stroke(255, 0, 0);
+            strokeWeight(2);
+            line(ptA.x, ptA.y, ptB.x, ptB.y);
+          }
+          for (let j = 0; j < hand.keypoints.length; j++) {
+            let kp = hand.keypoints[j];
+            fill(0, 255, 0);
+            noStroke();
+            circle(kp.x, kp.y, 8);
+          }
+          let orientation = getHandOrientation(hand);
+          let wrist = hand.keypoints[0];
+          fill(orientation === "Innenfläche" ? color(0, 180, 255) : color(255, 140, 0));
+          noStroke();
+          rect(wrist.x - 55, wrist.y - 36, 110, 24, 6);
+          fill(255);
+          textSize(14);
+          textAlign(CENTER, CENTER);
+          text(orientation, wrist.x, wrist.y - 24);
+        }
+
+        let handsDetected = hands.length > 0;
+        noStroke();
+        fill(handsDetected ? color(0, 200, 0, 180) : color(200, 0, 0, 180));
+        rect(0, 0, width, 36);
+        fill(255);
+        textSize(18);
+        textAlign(LEFT, CENTER);
+        text(handsDetected ? "Hand(s) erkannt: " + hands.length : "Keine Hand erkannt", 12, 18);
+
+        noStroke();
+        fill(rechenDetected ? color(0, 180, 0, 200) : color(80, 80, 80, 180));
+        rect(0, 36, width, 36);
+        fill(255);
+        textSize(18);
+        textAlign(LEFT, CENTER);
+        text(rechenDetected ? "Rechen erkannt" : "Kein Rechen erkannt", 12, 54);
+
+        let twoHands = hands.length >= 2;
+        let now = millis();
+        if (twoHands && !prevTwoHands && now - lastCPress > COOLDOWN) {
+          lastCPress = now;
+          sendSerial('C');
+        }
+        if (rechenDetected && !prevRechenDetected && now - lastDPress > COOLDOWN) {
+          lastDPress = now;
+          // Station 4: D wird ausschliesslich aus drawWaitingScreen gesendet (Spielstart-Signal).
+          // Von hier aus wuerde D den ESP/Figma triggern, ohne dass der Browser-Timer laeuft.
+          if (currentStation !== 4) {
+            sendSerial('D');
+          }
+        }
+        prevTwoHands = twoHands;
+        prevRechenDetected = rechenDetected;
+      }
+
+      function startHandDetection() {
+        if (video && handPose && !handDetectionActive) {
+          handDetectionActive = true;
+          handPose.detectStart(video, gotHands);
+          console.log('[HAND-DETECTION] Aktiviert');
+        }
+      }
+
+      function stopHandDetection() {
+        if (handPose && handDetectionActive) {
+          handDetectionActive = false;
+          handPose.detectStop();
+          hands = [];
+          console.log('[HAND-DETECTION] Gestoppt');
+        }
+      }
+
+      function gotHands(results) {
+        hands = results;
+      }
+
+      // ---------------------------------------------------------------------------
+      // STATION 4 – Minispiel Funktionen
+      // ---------------------------------------------------------------------------
+
+      // Wird von goToStation(4) aufgerufen. Wartet zunächst auf den Abstandssensor
+      // (Person steht vor der Station), erst danach kann der Rechen hochgehoben werden.
+      async function handleStation4Start() {
+        // Alten Sensor-Timer abbrechen wenn Station 4 neu gestartet wird
+        if (station4SensorTimeoutId) {
+          clearTimeout(station4SensorTimeoutId);
+          console.log('[handleStation4Start] Alter Sensor-Timer abgebrochen');
+          station4SensorTimeoutId = null;
+        }
+        
+        // Cleanup Video-Timer
+        if (station4NegativeVideoTimer) {
+          clearTimeout(station4NegativeVideoTimer);
+          station4NegativeVideoTimer = null;
+        }
+        
+        station4State      = 'sensor_wait';
+        station4GameResult = null;
+        station4ResultSent = false;
+        station4LiftProcessing = false; // Reset Flag für neuen Versuch
+        gameState          = 'waiting';
+        
+        // Reset Video-State
+        station4VideoState = 'neutral';
+        station4LastVideoState = null;
+        station4CurrentSegmentStartTime = 0;
+        
+        console.log('[Station4] Bereit - warte auf Abstandssensor (Person vor der Station)');
+        sendIpadEvent('reset');
+      }
+
+      // Wird aufgerufen, wenn der Abstandssensor 'z' sendet, während Station 4 aktiv ist.
+      // Startet die 53s-Wartezeit (Figma-Intro), danach wird "Rechen hochheben" möglich.
+      function handleStation4SensorTriggered() {
+        if (station4State !== 'sensor_wait') {
+          console.log('[Station4] Abstandssensor ignoriert - falscher State:', station4State);
+          return;
+        }
+        station4State = 'intro_wait';
+        console.log('[Station4] Abstandssensor ausgelöst -', STATION4_SENSOR_WAIT_MS, 'ms bis Rechen hochheben möglich ist');
+        sendIpadEvent('intro'); // iPad: Erklärvideo anzeigen
+        
+        // Sound-Logik: Walking In nach 500ms
+        setTimeout(() => {
+          console.log('[Station4-Audio] Nach 500ms Delay: Spiele walking in Sound ab');
+          playSound('WALKIN', stationPanners[4]);
+        }, REACTION_DELAY_MS);
+        
+        // Sound-Logik: Aha nach 7400ms (500ms + 6900ms)
+        setTimeout(() => {
+          console.log('[Station4-Audio] Nach 7400ms: Spiele Aha Sound ab');
+          playSound('AHA4', stationPanners[4]);
+        }, 500 + 6900);
+        
+        setTimeout(() => {
+          if (currentStation === 4 && station4State === 'intro_wait') {
+            station4State = 'waiting_rake';
+            console.log('[Station4] Intro-Wartezeit vorbei - Rechen hochheben jetzt möglich!');
+          }
+        }, STATION4_SENSOR_WAIT_MS);
+      }
+
+      // Startet das Minispiel: interner Timer wird gesetzt.
+      // Das eigentliche Video läuft in Figma, ausgelöst durch das 'D'-Signal an den ESP.
+      function startStation4MiniGame() {
+        console.log('[Station4] 🎮 Minispiel gestartet | currentStation:', currentStation, '| state:', station4State);
+        
+        station4State       = 'minigame';
+        station4LastSegIdx  = -1;
+        station4ActionDone  = false;
+        station4ResultSent  = false;
+        station4GameResult  = null;
+        station4GameStartMs = millis();
+        sendIpadEvent('game_start');
+        
+        // Reset Video-State Variablen
+        station4VideoState = 'neutral';
+        station4LastVideoState = null;
+        station4CurrentSegmentStartTime = 0;
+        if (station4NegativeVideoTimer) {
+          clearTimeout(station4NegativeVideoTimer);
+          station4NegativeVideoTimer = null;
+        }
+        
+        console.log('[Station4] ⏱️  Timer gestartet bei millis():', station4GameStartMs);
+      }
+
+      // Beendet das Minispiel und sendet das Ergebnis an den ESP32.
+      // W = gewonnen, M = verschimmelt, V = vertrocknet
+      function endStation4Game() {
+        console.log('[Station4] endStation4Game() aufgerufen | state:', station4State, '| result:', station4GameResult);
+        
+        // Cleanup Video-Timer
+        if (station4NegativeVideoTimer) {
+          clearTimeout(station4NegativeVideoTimer);
+          station4NegativeVideoTimer = null;
+        }
+        
+        if (station4State === 'result') {
+          console.log('[Station4] Bereits im result-State, Doppelaufruf ignoriert');
+          return;
+        }
+        
+        if (!station4GameResult) {
+          console.error('[Station4] FEHLER: station4GameResult ist null/undefined!');
+          station4GameResult = 'vertrocknet'; // Fallback
+        }
+        
+        station4State = 'result';
+        station4LiftProcessing = false; // Reset Flag für eventuellen Neustart
+        stopHandDetection(); // Stoppe Hand-Erkennung wenn Spiel endet
+        sendIpadEvent('end', { result: station4GameResult });
+        
+        if (!station4ResultSent) {
+          station4ResultSent = true;
+          let resultChar = '';
+          
+          if (station4GameResult === 'win') {
+            resultChar = 'W';
+            console.log('[Station4] GEWONNEN – alle Segmente geschafft!');
+            // Sound: Juhu nach 500ms
+            setTimeout(() => {
+              console.log('[Station4-Audio] Nach 500ms Delay: Spiele Juhu Sound ab');
+              playSound('JUHU4', stationPanners[4]);
+            }, REACTION_DELAY_MS);
+          } else if (station4GameResult === 'verschimmelt') {
+            resultChar = 'M';
+            console.log('[Station4] GAME OVER – Bohnen verschimmelt (Regen-Segment verpasst)');
+            // Sound: Oh oh nach 500ms
+            setTimeout(() => {
+              console.log('[Station4-Audio] Nach 500ms Delay: Spiele Oh oh Sound ab');
+              playSound('OHOH4', stationPanners[4]);
+            }, REACTION_DELAY_MS);
+          } else if (station4GameResult === 'vertrocknet') {
+            resultChar = 'V';
+            console.log('[Station4] GAME OVER – Bohnen vertrocknet (Sonne-Segment verpasst)');
+            // Sound: Oh oh nach 500ms
+            setTimeout(() => {
+              console.log('[Station4-Audio] Nach 500ms Delay: Spiele Oh oh Sound ab');
+              playSound('OHOH4', stationPanners[4]);
+            }, REACTION_DELAY_MS);
+          } else {
+            console.error('[Station4] Unbekanntes Ergebnis:', station4GameResult);
+            resultChar = 'V';
+          }
+          
+          console.log('[Station4] Sende Ergebnis:', resultChar);
+          sendSerial(resultChar);
+          
+          // Nach 2 Sekunden: Spiel zurücksetzen für nächste Runde
+          setTimeout(() => {
+            resetStation4ForNextRound();
+          }, 2000);
+          
+          // Nach 22 Sekunden: Sende U um Figma zurückzusetzen
+          setTimeout(() => {
+            console.log('[Station4] Sende U an Figma-Reset');
+            sendSerial('U');
+            
+            // Stoppe alle laufenden Sounds
+            if (audioContext) {
+              audioContext.close();
+              audioContext = new (window.AudioContext || window.webkitAudioContext)();
+              setupStationPanners(); // Re-setup panners nach Reset
+              console.log('[Station4-Audio] AudioContext resettet - Sounds gestoppt');
+            }
+          }, 22000);
+        } else {
+          console.log('[Station4] ResultSent-Flag bereits gesetzt, kein erneuter Versand');
+        }
+      }
+      
+      // Setzt Station 4 für die nächste Runde zurück
+      function resetStation4ForNextRound() {
+        console.log('[Station4] 🔄 Zurücksetzen für nächste Runde...');
+        
+        // Alle Timer bereinigen
+        if (station4NegativeVideoTimer) {
+          clearTimeout(station4NegativeVideoTimer);
+          station4NegativeVideoTimer = null;
+        }
+        if (station4SensorTimeoutId) {
+          clearTimeout(station4SensorTimeoutId);
+          station4SensorTimeoutId = null;
+        }
+        
+        // State zurücksetzen
+        station4State = 'waiting_rake';
+        station4GameResult = null;
+        station4ResultSent = false;
+        station4LiftProcessing = false;
+        gameState = 'waiting';
+        
+        // Video-State zurücksetzen
+        station4VideoState = 'neutral';
+        station4LastVideoState = null;
+        station4CurrentSegmentStartTime = 0;
+        station4LastSegIdx = -1;
+        station4ActionDone = false;
+        
+        // Rechenerkennung neu kalibrieren
+        console.log('[Station4] 🔄 Rechenerkennung wird neu kalibriert...');
+        liftCalibrationPhase = true;
+        liftCalibrationCounter = 0;
+        liftReferencePositions = [];
+        stillFrames = 0;
+        rechenStable = false;
+        lastRechenCX = null;
+        lastRechenCY = null;
+        
+        console.log('[Station4] ✅ Bereit für nächste Runde!');
+      }
+
+      // Helper: sende Video-Key wenn State sich ändert
+      function station4SendVideoKey(newState) {
+        if (newState !== station4LastVideoState) {
+          station4LastVideoState = newState;
+          const key = station4VideoKeys[newState];
+          console.log('[Station4-Video] State wechsel: ' + newState + ' → Key ' + key + ' gesendet');
+          sendSerial(key);
+        }
+      }
+
+      // HUD-Overlay während des Minispiels.
+      // Kamera-Feed wird bereits in draw() gezeichnet; hier nur noch Overlay + Logik.
+      function drawStation4Game() {
+        // Vergangene Zeit seit Spielstart (= Position im Figma-Video)
+        const videoTime = (millis() - station4GameStartMs) / 1000;
+
+        // Sicherheitsnetz: Hand-Erkennung muss im Minispiel immer laufen,
+        // egal ueber welchen Weg das Spiel gestartet wurde
+        if (!handDetectionActive) startHandDetection();
+
+        // Live-Status ans iPad (max. alle 500ms): was sieht die Kamera gerade?
+        if (millis() - lastIpadStatusMs > 500) {
+          lastIpadStatusMs = millis();
+          sendIpadEvent('status', {
+            hands: hands.length,
+            rechen: rechenDetected,
+            move: +currentAvgMove.toFixed(1),
+          });
+        }
+
+        // Gesamtzeit abgelaufen → alle Segmente geschafft → Gewonnen
+        if (videoTime >= STATION4_VIDEO_END) {
+          if (station4GameResult !== 'win') {
+            console.log('[Station4] ✅ Video-Ende erreicht (' + STATION4_VIDEO_END + 's) – Spiel gewonnen');
+            station4GameResult = 'win';
+          }
+          endStation4Game();
+          return;
+        }
+
+        // Aktives Segment ermitteln
+        let segIdx = -1;
+        for (let i = 0; i < STATION4_SEGMENTS.length; i++) {
+          const s = STATION4_SEGMENTS[i];
+          if (videoTime >= s.start && videoTime < s.end) { segIdx = i; break; }
+        }
+
+        // Segment-Wechsel: war die Aktion im vorherigen Segment erledigt?
+        if (segIdx !== station4LastSegIdx) {
+          if (station4LastSegIdx >= 0) {
+            const prev = STATION4_SEGMENTS[station4LastSegIdx];
+            if ((prev.type === 'sun' || prev.type === 'rain') && !station4ActionDone) {
+              station4GameResult = prev.type === 'sun' ? 'vertrocknet' : 'verschimmelt';
+              console.log('[Station4] Segment verpasst:', prev.type, '→', station4GameResult);
+              endStation4Game();
+              return;
+            }
+          }
+          station4LastSegIdx = segIdx;
+          station4ActionDone = false;
+          station4VideoState = 'neutral';
+          station4LastVideoState = null; // Reset um Key 0 neu zu senden
+          station4CurrentSegmentStartTime = videoTime;
+          
+          // Timer abbrechen falls noch aktiv
+          if (station4NegativeVideoTimer) {
+            clearTimeout(station4NegativeVideoTimer);
+            station4NegativeVideoTimer = null;
+          }
+          
+          const newSeg = STATION4_SEGMENTS[segIdx];
+          if (newSeg) {
+            // iPad: Phasenwechsel inkl. Zeiten, damit es den Fortschritt anzeigen kann
+            sendIpadEvent('segment', { seg: newSeg.type, start: newSeg.start, end: newSeg.end, t: videoTime });
+          }
+          if (newSeg && (newSeg.type === 'sun' || newSeg.type === 'rain')) {
+            console.log('[Station4] Aktuelles Segment:', newSeg.type, '(' + newSeg.start + 's – ' + newSeg.end + 's)');
+            // Sende Key 0 (neutrales Video) am Anfang der Aktion-Phase
+            station4SendVideoKey('neutral');
+            
+            // Starte Timer: nach 2.5 Sekunden ohne Aktion -> Key 2 (negatives Video)
+            station4NegativeVideoTimer = setTimeout(() => {
+              if (station4VideoState !== 'positive') {
+                station4VideoState = 'negative';
+                station4SendVideoKey('negative');
+                console.log('[Station4-Video] 2.5 Sekunden ohne Aktion - wechsel zu negativem Video');
+              }
+              station4NegativeVideoTimer = null;
+            }, 2500);
+          }
+        }
+
+        if (segIdx < 0) return;
+        const seg = STATION4_SEGMENTS[segIdx];
+
+        // Aktionen erkennen
+        // Sonne: Rechen erkannt (oder nur kurz verdeckt) UND deutlich bewegt
+        const rechenSichtbar = rechenDetected || rachenMissingFrames <= RECHEN_MISSING_TOLERANCE;
+        if (seg.type === 'sun' && rechenSichtbar && currentAvgMove > STATION4_SUN_MOVE_THRESHOLD) {
+          if (!station4ActionDone) {
+            console.log('[Station4] Aktion erkannt: Rechen bewegt (Sonne) - Bewegung: ' + currentAvgMove.toFixed(2) + 'px');
+            station4ActionDone = true;
+            sendIpadEvent('action', { action: 'rechen' });
+            // Aktion richtig: wechsel zu positiven Video (Key 1)
+            station4VideoState = 'positive';
+            station4SendVideoKey('positive');
+            // Abbrechen des 2-Sekunden Timers wenn Aktion erkannt
+            if (station4NegativeVideoTimer) {
+              clearTimeout(station4NegativeVideoTimer);
+              station4NegativeVideoTimer = null;
+              console.log('[Station4-Video] Timer abgebrochen - positive Aktion erkannt');
+            }
+          }
+        }
+        // Regen: mindestens STATION4_RAIN_MIN_HANDS Haende erkannt
+        if (seg.type === 'rain' && hands.length >= STATION4_RAIN_MIN_HANDS) {
+          if (!station4ActionDone) {
+            console.log('[Station4] Aktion erkannt: ' + hands.length + ' Hand/Hände (Regen)');
+            station4ActionDone = true;
+            sendIpadEvent('action', { action: 'haende' });
+            // Aktion richtig: wechsel zu positiven Video (Key 1)
+            station4VideoState = 'positive';
+            station4SendVideoKey('positive');
+            // Abbrechen des 2-Sekunden Timers wenn Aktion erkannt
+            if (station4NegativeVideoTimer) {
+              clearTimeout(station4NegativeVideoTimer);
+              station4NegativeVideoTimer = null;
+              console.log('[Station4-Video] Timer abgebrochen - positive Aktion erkannt');
+            }
+          }
+        }
+
+        drawStation4GameOverlay(seg, videoTime);
+      }
+
+      // Zeichnet den HUD-Overlay während des Minispiels.
+      function drawStation4GameOverlay(seg, videoTime) {
+        noStroke();
+
+        // Timer-Balken (nur bei interaktiven Segmenten)
+        if (seg.type === 'sun' || seg.type === 'rain') {
+          const totalTime = seg.end - seg.start;
+          const progress  = constrain((videoTime - seg.start) / totalTime, 0, 1);
+          const timeLeft  = seg.end - videoTime;
+          const barW = width * 0.8;
+          const barX = width * 0.1;
+
+          fill(0, 0, 0, 150);
+          rect(barX - 4, 6, barW + 8, 24, 6);
+          fill(timeLeft > 2 ? color(50, 220, 80) : color(255, 60, 60));
+          rect(barX, 10, barW * (1 - progress), 16, 4);
+        }
+
+        // Aufgaben-Hinweis (unten)
+        if (seg.type === 'sun' || seg.type === 'rain') {
+          const isSun = seg.type === 'sun';
+          fill(isSun ? color(255, 210, 0, 215) : color(40, 100, 240, 215));
+          rect(0, height - 60, width, 60);
+          fill(isSun ? color(0) : color(255));
+          textSize(22);
+          textAlign(CENTER, CENTER);
+          if (station4ActionDone) {
+            text(isSun ? 'Gut gerecht! ✓' : 'Gut geschützt! ✓', width / 2, height - 30);
+          } else {
+            text(isSun ? 'Reche über die Bohnen! ☀️' : 'Hände über die Bohnen! 🌧️', width / 2, height - 30);
+          }
+        }
+
+        // Status-Badges (oben rechts)
+        fill(hands.length >= STATION4_RAIN_MIN_HANDS ? color(0, 200, 80, 210) : color(70, 70, 70, 190));
+        rect(width - 106, height - 120, 96, 34, 6);
+        fill(255);
+        textSize(13);
+        textAlign(CENTER, CENTER);
+        text('Hände: ' + hands.length, width - 58, height - 103);
+
+        fill(rechenDetected ? color(0, 200, 80, 210) : color(70, 70, 70, 190));
+        rect(width - 106, height - 80, 96, 34, 6);
+        fill(255);
+        text(rechenDetected ? 'Rechen ✓' : 'Kein Rechen', width - 58, height - 63);
+      }
+
+
+    </script>
+  </body>
+</html>

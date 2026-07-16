@@ -1,0 +1,684 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <title>Kakaobohnen-Minigame (iPad)</title>
+  <!-- Viewport: kein Zoomen, keine Skalierung – Kiosk-Feeling auf dem iPad -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <!-- Erlaubt Vollbild, wenn die Seite über "Zum Home-Bildschirm" gestartet wird -->
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-fullscreen" />
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      /* Verhindert Scrollen, Pull-to-Refresh und Doppeltipp-Zoom auf dem iPad */
+      touch-action: none;
+      -webkit-user-select: none;
+      user-select: none;
+      -webkit-touch-callout: none;
+      font-family: -apple-system, "Helvetica Neue", Arial, sans-serif;
+      background: #111;
+      color: #fff;
+    }
+
+    /* Jeder "Screen" füllt das ganze Display, nur einer ist sichtbar */
+    .screen {
+      position: absolute;
+      inset: 0;
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 4vh;
+      text-align: center;
+      padding: 5vw;
+      transition: background 0.6s ease;
+    }
+    .screen.active { display: flex; }
+
+    .big {
+      font-size: 9vw;
+      font-weight: 800;
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+    }
+    .medium { font-size: 4vw; font-weight: 600; opacity: 0.9; }
+    .small  { font-size: 2.5vw; opacity: 0.6; }
+
+    /* Erkennungs-Feedback ("Hände erkannt" / "Rechenbewegungen erkannt") */
+    #detect-feedback {
+      font-size: 5vw;
+      font-weight: 700;
+      min-height: 7vw;
+      opacity: 0;
+      transition: opacity 0.2s ease;
+    }
+    #detect-feedback.visible { opacity: 1; }
+
+    /* Phasen-Hintergründe */
+    #screen-game.sun        { background: #f2a900; color: #3a2500; }
+    #screen-game.rain       { background: #1b4b8f; color: #eaf3ff; }
+    #screen-game.transition { background: #555;    color: #eee;    }
+    #screen-game.intro,
+    #screen-game.outro      { background: #333;    color: #eee;    }
+
+    /* Fortschrittsbalken der aktuellen Phase */
+    #phase-progress-wrap {
+      position: absolute;
+      bottom: 4vh;
+      left: 10vw;
+      right: 10vw;
+      height: 2vh;
+      background: rgba(0, 0, 0, 0.25);
+      border-radius: 1vh;
+      overflow: hidden;
+    }
+    #phase-progress {
+      height: 100%;
+      width: 0%;
+      background: rgba(255, 255, 255, 0.85);
+    }
+
+    #screen-start  { background: #2d1a0e; }
+    #screen-video  { background: #000; }
+    #screen-end    { background: #2d6a2d; }
+    #screen-end.lose { background: #7a2d2d; }
+
+    .hint { position: absolute; bottom: 10vh; font-size: 2.5vw; opacity: 0.5; }
+
+    /* Live-Kamera-Status (unten links, nur waehrend des Spiels) */
+    #debug-status {
+      position: fixed;
+      bottom: 1vh;
+      left: 1vh;
+      font-size: 1.8vw;
+      opacity: 0.55;
+      z-index: 10;
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* Verbindungsanzeige zur Station (oben rechts) */
+    #conn-dot {
+      position: fixed;
+      top: 2vh;
+      right: 2vh;
+      width: 2vh;
+      height: 2vh;
+      border-radius: 50%;
+      background: #c33;
+      z-index: 10;
+      transition: background 0.3s ease;
+    }
+    #conn-dot.online { background: #2c2; }
+
+    /* Video Debug Indicator */
+    #video-debug {
+      position: fixed;
+      top: 10vh;
+      right: 2vh;
+      background: rgba(0,0,0,0.8);
+      color: #fff;
+      padding: 1vh;
+      border-radius: 0.5vh;
+      font-size: 1.5vw;
+      z-index: 10;
+      font-family: monospace;
+      max-width: 20vh;
+      word-wrap: break-word;
+      line-height: 1.4;
+    }
+  </style>
+</head>
+<body>
+
+  <div id="conn-dot" title="Verbindung zur Station"></div>
+  <div id="debug-status"></div>
+  <div id="video-debug" style="display: none;"></div>
+
+  <!-- Video Container (außerhalb von screens) -->
+  <video id="rake-video" preload="auto" style="position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; object-fit: contain; display: none; z-index: 1000; background: #000;" muted playsinline>
+    <source src="Videos_Bilder_Station4/Rechen%20anheben.mp4" type="video/mp4">
+  </video>
+  <video id="end-video" preload="auto" style="position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; object-fit: contain; display: none; z-index: 1000; background: #000;" muted playsinline>
+    <source src="Videos_Bilder_Station4/Juhu.mp4" type="video/mp4">
+  </video>
+
+  <!-- 1) Startscreen -->
+  <div id="screen-start" class="screen active">
+    <img id="start-image" src="Videos_Bilder_Station4/Start%20Station%204.png" alt="Start Station 4" style="width: 100vw; height: 100vh; object-fit: contain;">
+  </div>
+
+  <!-- 2) Erklärvideo (Platzhalter) -->
+  <div id="screen-video" class="screen">
+    <div class="big">Erklärvideo</div>
+    <div class="medium" id="video-countdown"></div>
+    <div class="hint" id="video-hint"></div>
+  </div>
+
+  <!-- 2b) Rechen anheben Anleitung -->
+  <div id="screen-rake" class="screen">
+  </div>
+
+  <!-- 3) Minigame -->
+  <div id="screen-game" class="screen">
+    <div class="big" id="phase-label"></div>
+    <div class="medium" id="phase-instruction"></div>
+    <div id="detect-feedback"></div>
+    <div id="phase-progress-wrap"><div id="phase-progress"></div></div>
+  </div>
+
+  <!-- 4) Ende -->
+  <div id="screen-end" class="screen">
+    <div id="end-text-content">
+      <div class="big">Spiel beendet</div>
+      <div class="medium" id="end-result"></div>
+      <div class="small" id="end-countdown"></div>
+    </div>
+  </div>
+
+  <script>
+    // =========================================================================
+    // KONFIGURATION
+    // =========================================================================
+    const VIDEO_DURATION_S = 5;   // Nur Demo-Modus: Platzhalter-Dauer des Erklärvideos
+    const END_DURATION_S   = 8;   // Wie lange "Spiel beendet" steht, bevor es zurück zum Start geht
+
+    // Nur Demo-Modus (Tipp auf Startscreen, ohne Station/Kamera):
+    const DEMO_SEGMENTS = [
+      { start: 0,  end: 5,  type: 'sun'        },
+      { start: 5,  end: 6,  type: 'transition' },
+      { start: 6,  end: 11, type: 'rain'       },
+      { start: 11, end: 12, type: 'transition' },
+      { start: 12, end: 17, type: 'sun'        },
+    ];
+    const RAKE_MIN_DISTANCE_PX = 500; // Demo: Wischstrecke für "Rechen erkannt"
+    const RAKE_MIN_REVERSALS   = 2;
+    const HAND_MIN_TOUCHES     = 3;   // Demo: flache Hand = mehrere Touchpunkte
+    const HAND_HOLD_MS         = 400;
+
+    // =========================================================================
+    // SCREEN-VERWALTUNG
+    // =========================================================================
+    const screens = {
+      start: document.getElementById('screen-start'),
+      video: document.getElementById('screen-video'),
+      rake:  document.getElementById('screen-rake'),
+      game:  document.getElementById('screen-game'),
+      end:   document.getElementById('screen-end'),
+    };
+
+    function showScreen(name) {
+      Object.values(screens).forEach(s => s.classList.remove('active'));
+      screens[name].classList.add('active');
+    }
+
+    const phaseLabel       = document.getElementById('phase-label');
+    const phaseInstruction = document.getElementById('phase-instruction');
+    const detectFeedback   = document.getElementById('detect-feedback');
+    const phaseProgress    = document.getElementById('phase-progress');
+    const startStatus      = document.getElementById('start-status');
+    const videoCountdown   = document.getElementById('video-countdown');
+    const videoHint        = document.getElementById('video-hint');
+    const endResult        = document.getElementById('end-result');
+    const connDot          = document.getElementById('conn-dot');
+    const debugStatus      = document.getElementById('debug-status');
+
+    function setPhase(segType) {
+      screens.game.classList.remove('sun', 'rain', 'transition', 'intro', 'outro');
+      screens.game.classList.add(segType);
+      detectFeedback.classList.remove('visible');
+
+      if (segType === 'sun') {
+        phaseLabel.textContent       = 'Sonne';
+        phaseInstruction.textContent = 'Wende die Bohnen mit dem Rechen!';
+      } else if (segType === 'rain') {
+        phaseLabel.textContent       = 'Regen';
+        phaseInstruction.textContent = 'Halte deine Hände über die Bohnen!';
+      } else if (segType === 'intro') {
+        phaseLabel.textContent       = 'Gleich geht’s los!';
+        phaseInstruction.textContent = '';
+      } else if (segType === 'outro') {
+        phaseLabel.textContent       = 'Geschafft!';
+        phaseInstruction.textContent = '';
+      } else {
+        phaseLabel.textContent       = 'Wetter wechselt …';
+        phaseInstruction.textContent = '';
+      }
+    }
+
+    function showDetected(text) {
+      detectFeedback.textContent = text;
+      detectFeedback.classList.add('visible');
+    }
+
+    let endTimerId = null;
+    let endVideoElement = null;
+    const videoDebug = document.getElementById('video-debug');
+    
+    function updateVideoDebug(msg) {
+      console.log('🎬', msg);
+      videoDebug.textContent = msg;
+      videoDebug.style.display = 'block';
+    }
+    
+    function playVideoOnIPad(videoEl) {
+      updateVideoDebug(`▶ ${videoEl.id} wird gestartet...`);
+      videoEl.currentTime = 0; // Zurück zum Anfang
+      
+      const playPromise = videoEl.play();
+      if (playPromise !== undefined) {
+        playPromise
+          .then(() => {
+            updateVideoDebug(`✓ ${videoEl.id} spielt`);
+          })
+          .catch(error => {
+            updateVideoDebug(`✗ Fehler: ${error.message}`);
+          });
+      }
+    }
+    
+    function showEnd(resultText, lose) {
+      console.log('🎬 showEnd called:', { resultText, lose });
+      stopDemo();
+      cancelRemoteProgress();
+      screens.end.classList.toggle('lose', !!lose);
+      clearInterval(endTimerId);
+      
+      endVideoElement = document.getElementById('end-video');
+      const endTextContent = document.getElementById('end-text-content');
+      const endResultEl = document.getElementById('end-result');
+      const endCountdownEl = document.getElementById('end-countdown');
+      
+      showScreen('end');
+      
+      // Wenn gewonnen (lose = false): Juhu-Video abspielen
+      if (!lose) {
+        console.log('✅ JUHU VIDEO WIRD GEZEIGT');
+        endVideoElement.style.display = 'block';
+        endTextContent.style.display = 'none';
+        playVideoOnIPad(endVideoElement);
+        
+        endVideoElement.onended = () => {
+          console.log('✅ Video beendet');
+          endVideoElement.style.display = 'none';
+          endTextContent.style.display = 'flex';
+          showScreen('start');
+        };
+      } else {
+        console.log('❌ VERLOREN - TEXT WIRD GEZEIGT');
+        // Verloren oder Demo: Text-Version anzeigen
+        endVideoElement.style.display = 'none';
+        endTextContent.style.display = 'flex';
+        endResultEl.textContent = resultText || '';
+        let remaining = END_DURATION_S;
+        endCountdownEl.textContent = `Zurück zum Start in ${remaining} s`;
+        
+        endTimerId = setInterval(() => {
+          remaining--;
+          endCountdownEl.textContent = `Zurück zum Start in ${remaining} s`;
+          if (remaining <= 0) {
+            clearInterval(endTimerId);
+            showScreen('start');
+          }
+        }, 1000);
+      }
+    }
+
+    // =========================================================================
+    // STATIONS-MODUS: Events vom Admin-Screen (Laptop) via Server-Sent Events
+    // Die echte Erkennung (Kamera: Hände, Rechen-Tracking) laeuft im
+    // Admin-Screen; das iPad zeigt nur an, was dort erkannt wird.
+    // =========================================================================
+    let remoteProgressId = null;
+
+    function cancelRemoteProgress() {
+      cancelAnimationFrame(remoteProgressId);
+      remoteProgressId = null;
+    }
+
+    // Animiert den Fortschrittsbalken einer Phase lokal weiter
+    // (Startwert + Dauer kommen aus dem Segment-Event der Station).
+    function animateRemoteProgress(offsetS, durationS) {
+      cancelRemoteProgress();
+      const startedAt = performance.now();
+      function step() {
+        const elapsed = offsetS + (performance.now() - startedAt) / 1000;
+        const frac = Math.min(elapsed / durationS, 1);
+        phaseProgress.style.width = (frac * 100).toFixed(1) + '%';
+        if (frac < 1) remoteProgressId = requestAnimationFrame(step);
+      }
+      step();
+    }
+
+    const RESULT_TEXTS = {
+      win:          { text: 'Gewonnen! Die Bohnen sind perfekt getrocknet. 🎉', lose: false },
+      verschimmelt: { text: 'Oh nein – die Bohnen sind verschimmelt! 🌧️',      lose: true  },
+      vertrocknet:  { text: 'Oh nein – die Bohnen sind vertrocknet! ☀️',        lose: true  },
+    };
+
+    function handleRemoteEvent(ev) {
+      if (ev.type === 'connected') return;
+
+      // Live-Kamera-Status: nur Anzeige aktualisieren, kein Screen-Wechsel
+      if (ev.type === 'status') {
+        debugStatus.textContent =
+          `Kamera: ${ev.hands} Hand/Hände · Rechen ${ev.rechen ? '✓' : '–'} · Bewegung ${ev.move} px`;
+        return;
+      }
+
+      // Abstandssensor-Signal vom Haupt-ESP über Admin-Screen
+      if (ev.type === 'sensor' && ev.signal === 'e') {
+        // Nur im Startscreen: Sensor startet die Erklärung
+        if (screens.start.classList.contains('active')) {
+          demoActive = true;
+          showScreen('video');
+          videoHint.textContent = '';
+          let remaining = VIDEO_DURATION_S;
+          videoCountdown.textContent = `Erklärung lädt …`;
+          clearInterval(demoTimerId);
+          demoTimerId = setInterval(() => {
+            remaining--;
+            videoCountdown.textContent = `Spiel startet in ${remaining} s …`;
+            if (remaining <= 0) {
+              clearInterval(demoTimerId);
+              startDemoGame();
+            }
+          }, 1000);
+        }
+        return;
+      }
+
+      stopDemo(); // Station uebernimmt: laufenden Demo-Modus sofort beenden
+
+      switch (ev.type) {
+        case 'reset':
+          cancelRemoteProgress();
+          clearInterval(endTimerId);
+          debugStatus.textContent = '';
+          showScreen('start');
+          break;
+
+        case 'intro':
+          videoCountdown.textContent = 'läuft …';
+          videoHint.textContent = '';
+          showScreen('video');
+          break;
+
+        case 'game_start':
+          // Statt direkt zum Game: Zuerst der Rake-Anleitung Screen
+          const rakeVideo = document.getElementById('rake-video');
+          rakeVideo.style.display = 'block';
+          rakeVideo.style.visibility = 'visible';
+          rakeVideo.style.opacity = '1';
+          console.log('🎬 Rake-Video wird abgespielt (Station)');
+          playVideoOnIPad(rakeVideo);
+          showScreen('rake');
+          break;
+
+        case 'segment':
+          showScreen('game');
+          setPhase(ev.seg);
+          animateRemoteProgress((ev.t ?? ev.start) - ev.start, ev.end - ev.start);
+          break;
+
+        case 'action':
+          // Wenn Rake-Screen aktiv: Rechen wurde hochgehoben - starte Game
+          if (screens.rake.classList.contains('active')) {
+            document.getElementById('rake-video').style.display = 'none';
+            showScreen('game');
+            setPhase('intro');
+            phaseProgress.style.width = '0%';
+          } else {
+            showDetected(ev.action === 'haende' ? '✔ Hände erkannt' : '✔ Rechenbewegungen erkannt');
+          }
+          break;
+
+        case 'end': {
+          const r = RESULT_TEXTS[ev.result] || { text: '', lose: false };
+          debugStatus.textContent = '';
+          showEnd(r.text, r.lose);
+          break;
+        }
+      }
+    }
+
+    function connectToStation() {
+      const es = new EventSource('/events');
+      es.onopen  = () => {
+        connDot.classList.add('online');
+        startStatus.textContent = 'Verbunden – warte auf Station 4 …';
+      };
+      es.onerror = () => {
+        connDot.classList.remove('online');
+        startStatus.textContent = 'Keine Verbindung zur Station …';
+        // EventSource verbindet sich automatisch neu
+      };
+      es.onmessage = (msg) => {
+        try {
+          handleRemoteEvent(JSON.parse(msg.data));
+        } catch (e) {
+          console.warn('Ungueltiges Event:', msg.data);
+        }
+      };
+    }
+    connectToStation();
+
+    // =========================================================================
+    // DEMO-MODUS (Tipp auf den Startscreen): lokaler Ablauf mit Touch-Erkennung,
+    // zum Testen ohne Kamera/Station. Ein Stations-Event bricht die Demo ab.
+    // =========================================================================
+    let demoActive    = false;
+    let demoTimerId   = null;
+    let demoLoopId    = null;
+    let demoLastSeg   = -1;
+    let demoStartMs   = 0;
+    let demoActionDone = false;
+
+    function stopDemo() {
+      if (!demoActive) return;
+      demoActive = false;
+      clearInterval(demoTimerId);
+      cancelAnimationFrame(demoLoopId);
+    }
+
+    screens.start.addEventListener('pointerdown', () => {
+      demoActive = true;
+      showScreen('video');
+      videoHint.textContent = 'Tippen zum Überspringen';
+      let remaining = VIDEO_DURATION_S;
+      videoCountdown.textContent = `Demo startet in ${remaining} s …`;
+      clearInterval(demoTimerId);
+      demoTimerId = setInterval(() => {
+        remaining--;
+        videoCountdown.textContent = `Demo startet in ${remaining} s …`;
+        if (remaining <= 0) {
+          clearInterval(demoTimerId);
+          startDemoGame();
+        }
+      }, 1000);
+    });
+
+    screens.video.addEventListener('pointerdown', () => {
+      if (!demoActive) return;
+      clearInterval(demoTimerId);
+      startDemoGame();
+    });
+
+    function startDemoGame() {
+      if (!demoActive) return;
+      
+      // Zeige erst das Rake-Video für 3 Sekunden im Demo-Modus
+      const rakeVideo = document.getElementById('rake-video');
+      rakeVideo.style.display = 'block';
+      rakeVideo.style.visibility = 'visible';
+      rakeVideo.style.opacity = '1';
+      console.log('🎬 Rake-Video wird angezeigt');
+      playVideoOnIPad(rakeVideo);
+      showScreen('rake');
+      
+      // Nach 3 Sekunden: starte das Game
+      setTimeout(() => {
+        if (!demoActive) return;
+        console.log('⏹️ Rake-Video wird versteckt');
+        document.getElementById('rake-video').style.display = 'none';
+        showScreen('game');
+        demoStartMs = performance.now();
+        demoLastSeg = -1;
+        demoActionDone = false;
+        resetRake();
+        resetHand();
+        cancelAnimationFrame(demoLoopId);
+        demoLoop();
+      }, 3000);
+    }
+
+    function demoLoop() {
+      if (!demoActive) return;
+      const elapsedS = (performance.now() - demoStartMs) / 1000;
+
+      let segIdx = -1;
+      for (let i = 0; i < DEMO_SEGMENTS.length; i++) {
+        if (elapsedS >= DEMO_SEGMENTS[i].start && elapsedS < DEMO_SEGMENTS[i].end) { segIdx = i; break; }
+      }
+
+      if (segIdx === -1 && elapsedS >= DEMO_SEGMENTS[DEMO_SEGMENTS.length - 1].end) {
+        demoActive = false;
+        showEnd('(Demo-Modus)', false);
+        return;
+      }
+
+      if (segIdx !== demoLastSeg) {
+        demoLastSeg = segIdx;
+        demoActionDone = false;
+        resetRake();
+        resetHand();
+        if (segIdx !== -1) setPhase(DEMO_SEGMENTS[segIdx].type);
+      }
+
+      if (segIdx !== -1) {
+        const seg = DEMO_SEGMENTS[segIdx];
+        const frac = (elapsedS - seg.start) / (seg.end - seg.start);
+        phaseProgress.style.width = (frac * 100).toFixed(1) + '%';
+      }
+
+      demoLoopId = requestAnimationFrame(demoLoop);
+    }
+
+    function demoSegType() {
+      return demoActive && demoLastSeg >= 0 && demoLastSeg < DEMO_SEGMENTS.length
+        ? DEMO_SEGMENTS[demoLastSeg].type : null;
+    }
+
+    function demoMarkDone(text) {
+      if (demoActionDone) return;
+      demoActionDone = true;
+      showDetected(text);
+    }
+
+    // ---- Demo-Erkennung 1: Rechen = hin- und herwischen ----
+    let rakeDistance = 0, rakeReversals = 0, rakeLastX = null, rakeLastDir = 0;
+
+    function resetRake() {
+      rakeDistance = 0; rakeReversals = 0; rakeLastX = null; rakeLastDir = 0;
+    }
+
+    function handleRakeMove(x) {
+      if (demoSegType() !== 'sun') return;
+      if (rakeLastX !== null) {
+        const dx = x - rakeLastX;
+        rakeDistance += Math.abs(dx);
+        const dir = Math.sign(dx);
+        if (dir !== 0 && rakeLastDir !== 0 && dir !== rakeLastDir) rakeReversals++;
+        if (dir !== 0) rakeLastDir = dir;
+      }
+      rakeLastX = x;
+      if (rakeDistance >= RAKE_MIN_DISTANCE_PX && rakeReversals >= RAKE_MIN_REVERSALS) {
+        demoMarkDone('✔ Rechenbewegungen erkannt');
+      }
+    }
+
+    // ---- Demo-Erkennung 2: Hand = mehrere Touchpunkte, kurz gehalten ----
+    let handTimerId = null;
+
+    function resetHand() {
+      clearTimeout(handTimerId);
+      handTimerId = null;
+    }
+
+    function checkHand(touchCount) {
+      if (demoSegType() !== 'rain') { resetHand(); return; }
+      if (touchCount >= HAND_MIN_TOUCHES) {
+        if (handTimerId === null) {
+          handTimerId = setTimeout(() => demoMarkDone('✔ Hände erkannt'), HAND_HOLD_MS);
+        }
+      } else {
+        resetHand();
+      }
+    }
+
+    screens.game.addEventListener('touchstart', e => {
+      e.preventDefault();
+      checkHand(e.touches.length);
+    }, { passive: false });
+
+    screens.game.addEventListener('touchmove', e => {
+      e.preventDefault();
+      checkHand(e.touches.length);
+      const t = e.touches[0];
+      if (t) handleRakeMove(t.clientX);
+    }, { passive: false });
+
+    screens.game.addEventListener('touchend', e => {
+      checkHand(e.touches.length);
+      if (e.touches.length === 0) rakeLastX = null;
+    });
+
+    // Maus-Fallback (Test am Laptop): Ziehen = Rechen, Gedrückthalten = Hand
+    let mouseDown = false, mouseHoldTimerId = null;
+    screens.game.addEventListener('mousedown', () => {
+      mouseDown = true;
+      if (demoSegType() === 'rain') {
+        mouseHoldTimerId = setTimeout(() => demoMarkDone('✔ Hände erkannt'), HAND_HOLD_MS);
+      }
+    });
+    screens.game.addEventListener('mousemove', e => {
+      if (mouseDown) handleRakeMove(e.clientX);
+    });
+    window.addEventListener('mouseup', () => {
+      mouseDown = false;
+      rakeLastX = null;
+      clearTimeout(mouseHoldTimerId);
+    });
+
+    // =========================================================================
+    // Abstandssensor-Eingang: Signal 'e' vom zweiten Sensor startet Erklärung
+    // Der Arduino sendet diese Taste via Bluetooth, wenn der Sensor aktiviert wird
+    // =========================================================================
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'e' || e.key === 'E') {
+        // Nur im Startscreen: Sensor startet die Erklärung
+        if (screens.start.classList.contains('active')) {
+          demoActive = true;
+          showScreen('video');
+          videoHint.textContent = '';
+          let remaining = VIDEO_DURATION_S;
+          videoCountdown.textContent = `Erklärung lädt …`;
+          clearInterval(demoTimerId);
+          demoTimerId = setInterval(() => {
+            remaining--;
+            videoCountdown.textContent = `Spiel startet in ${remaining} s …`;
+            if (remaining <= 0) {
+              clearInterval(demoTimerId);
+              startDemoGame();
+            }
+          }, 1000);
+        }
+      }
+    });
+  </script>
+</body>
+</html>
