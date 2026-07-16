@@ -1,0 +1,67 @@
+🌟 Thank you for using ml5.js v1.3.1 🌟
+
+Please read our community statement to ensure 
+that the use of this software reflects the values 
+of the ml5.js community:
+↳ https://ml5js.org/about
+
+Reporting: 
+↳ https://github.com/ml5js/ml5-next-gen/issues
+↳ Email: info@ml5js.org 
+🌈🌈🌈🌈🌈🌈🌈🌈🌈🌈🌈🌈🌈🌈🌈🌈🌈🌈🌈🌈🌈🌈
+p5.min.js:2 Canvas2D: Multiple readback operations using getImageData are faster with the willReadFrequently attribute set to true. See: https://html.spec.whatwg.org/multipage/canvas.html#concept-canvas-will-read-frequently
+value @ p5.min.js:2
+(index):249 [AUDIO] Setup für Sound A/B und Station 4 bereit
+(index):304 [AUDIO] Station-1-Sounds geladen (A, B, HUHU, JUHU, AHA, OHOH, WALKOUT)
+(index):305 [AUDIO] Station-4-Sounds geladen (WALKIN, AHA4, OHOH4, JUHU4)
+(index):1 Chooser dialog is not displaying a port blocked by the Serial blocklist: bluetoothServiceClassId=0000110f-0000-1000-8000-00805f9b34fb, name='AirPods Pro - Find My'
+(index):1 Chooser dialog is not displaying a port blocked by the Serial blocklist: bluetoothServiceClassId=0000110e-0000-1000-8000-00805f9b34fb, name='AirPods Pro - Find My'
+(index):1 Chooser dialog is not displaying a port blocked by the Serial blocklist: bluetoothServiceClassId=0000111e-0000-1000-8000-00805f9b34fb, name='AirPods Pro - Find My'
+(index):1 Chooser dialog is not displaying a port blocked by the Serial blocklist: bluetoothServiceClassId=00001200-0000-1000-8000-00805f9b34fb, name='AirPods Pro - Find My'
+(index):1 Chooser dialog is not displaying a port blocked by the Serial blocklist: bluetoothServiceClassId=0000110b-0000-1000-8000-00805f9b34fb, name='AirPods Pro - Find My'
+(index):1 Chooser dialog is not displaying a port blocked by the Serial blocklist: bluetoothServiceClassId=00001000-0000-1000-8000-00805f9b34fb, name='AirPods Pro - Find My'
+(index):1 Chooser dialog is not displaying a port blocked by the Serial blocklist: bluetoothServiceClassId=00001801-0000-1000-8000-00805f9b34fb, name='AirPods Pro - Find My'
+(index):1 Chooser dialog is not displaying a port blocked by the Serial blocklist: bluetoothServiceClassId=0000110c-0000-1000-8000-00805f9b34fb, name='AirPods Pro - Find My'
+(index):1 Chooser dialog is not displaying a port blocked by the Serial blocklist: bluetoothServiceClassId=00001203-0000-1000-8000-00805f9b34fb, name='AirPods Pro - Find My'
+3(index):988 [DEBUG-LIFT] ❌ Rechen nicht erkannt
+(index):557 WEB -> ESP: P
+(index):500 ESP -> WEB: USB/Website-Befehl empfangen: P
+(index):500 ESP -> WEB: Unbekannter Website-Befehl: P
+2(index):988 [DEBUG-LIFT] ❌ Rechen nicht erkannt
+11(index):988 [DEBUG-LIFT] ❌ Rechen nicht erkannt
+(index):500 ESP -> WEB: e
+(index):423 ✅ Abstandssensor 2 (E) ausgelöst - Station 4 starte 70000ms Timer
+(index):171 [iPad→ #1 18:02:32.192] SENDE "sensor" {signal: 'e'}
+(index):176 [iPad→ #1] Kontext: Station=4 | station4State=waiting_rake | gameState=waiting
+(index):441 ⏱️  Station 4 Timer ID: 2 Wartezeit: 70000ms
+(index):1374 [Station4] Abstandssensor ignoriert - falscher State: waiting_rake
+(index):500 ESP -> WEB: Abstandssensor 2 aktiviert bei 6.9 cm
+(index):187 [iPad→ #1 18:02:32.192] ✅ zugestellt "sensor"
+(index):500 ESP -> WEB: ESP-NOW an Station 4 gesendet: y
+(index):500 ESP -> WEB: Abstandssensor 2 -> internes ESP-NOW-Signal an Station 4: y
+(index):500 ESP -> WEB: Abstandssensor 2 -> p5.js meldet: e
+(index):988 [DEBUG-LIFT] ❌ Rechen nicht erkannt
+(index):500 ESP -> WEB: Abstandssensor 2 wieder freigegeben.
+15(index):988 [DEBUG-LIFT] ❌ Rechen nicht erkannt
+(index):1001 [DEBUG-LIFT] Kalibrierung: 2/10
+(index):1001 [DEBUG-LIFT] Kalibrierung: 4/10
+(index):500 ESP -> WEB: e
+(index):423 ✅ Abstandssensor 2 (E) ausgelöst - Station 4 starte 70000ms Timer
+(index):171 [iPad→ #2 18:02:49.179] SENDE "sensor" {signal: 'e'}
+(index):176 [iPad→ #2] Kontext: Station=4 | station4State=waiting_rake | gameState=waiting
+(index):431 🔄 Station 4 Timer läuft bereits, Wackelkontakt ignoriert
+(index):500 ESP -> WEB: Abstandssensor 2 aktiviert bei 30.2 cm
+(index):187 [iPad→ #2 18:02:49.179] ✅ zugestellt "sensor"
+(index):500 ESP -> WEB: ESP-NOW an Station 4 gesendet: y
+(index):500 ESP -> WEB: Abstandssensor 2 -> internes ESP-NOW-Signal an Station 4: y
+(index):500 ESP -> WEB: Abstandssensor 2 -> p5.js meldet: e
+(index):988 [DEBUG-LIFT] ❌ Rechen nicht erkannt
+(index):500 ESP -> WEB: Abstandssensor 2 wieder freigegeben.
+(index):1001 [DEBUG-LIFT] Kalibrierung: 2/10
+(index):1001 [DEBUG-LIFT] Kalibrierung: 4/10
+(index):1001 [DEBUG-LIFT] Kalibrierung: 6/10
+(index):1001 [DEBUG-LIFT] Kalibrierung: 8/10
+(index):988 [DEBUG-LIFT] ❌ Rechen nicht erkannt
+(index):1001 [DEBUG-LIFT] Kalibrierung: 2/10
+(index):1001 [DEBUG-LIFT] Kalibrierung: 4/10
+16(index):988 [DEBUG-LIFT] ❌ Rechen nicht erkannt
