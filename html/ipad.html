@@ -173,6 +173,12 @@
     <source src="Videos_Bilder_Station4/Juhu.mp4" type="video/mp4">
   </video>
 
+  <!-- Erklaervideo (laeuft einmalig nach dem Countdown, danach Rake-Loop 2b).
+       Umlaut im Dateinamen ist als %C3%A4 kodiert. Stumm wegen iOS-Autoplay. -->
+  <video id="erklaer-video" preload="auto" style="position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; object-fit: contain; display: none; z-index: 1000; background: #000;" muted playsinline>
+    <source src="Videos_Bilder_Station4/Erkl%C3%A4rvideo.mp4" type="video/mp4">
+  </video>
+
   <!-- 1) Startscreen -->
   <div id="screen-start" class="screen active">
     <img id="start-image" src="Videos_Bilder_Station4/Start%20Station%204.png" alt="Start Station 4" style="width: 100vw; height: 100vh; object-fit: contain;">
@@ -369,6 +375,7 @@
 
     function startRakeLoop() {
       ipadLog('startRakeLoop() -> zeige Screen "rake"');
+      if (typeof hideExplainer === 'function') hideExplainer(); // Erklaer-Overlay weg
       showScreen('rake');
       rakeLoopVideo.muted = true;      // iOS: muted ist zwingend fuer Autoplay
       rakeLoopVideo.loop = true;
@@ -404,6 +411,92 @@
     function stopRakeLoop() {
       ipadLog('stopRakeLoop()');
       rakeLoopVideo.pause();
+    }
+
+    // -------------------------------------------------------------------------
+    // STATIONSABLAUF: Countdown -> Erklaervideo (einmalig) -> Rake-Loop (2b)
+    // -------------------------------------------------------------------------
+    const EXPLAINER_COUNTDOWN_S = 3;   // Countdown vor dem Erklaervideo (0 = sofort)
+    const erklaerVideo = document.getElementById('erklaer-video');
+    let explainerCountdownId = null;
+
+    // Fehler beim Erklaervideo -> nicht haengen bleiben, direkt zum Rake-Loop
+    erklaerVideo.addEventListener('error', () => {
+      const err = erklaerVideo.error;
+      ipadLog('❌ Erklaervideo VIDEO-ERROR code=' + (err && err.code) + ' -> ueberspringe zu Rake-Loop');
+      hideExplainer();
+      startRakeLoop();
+    });
+
+    function hideExplainer() {
+      clearInterval(explainerCountdownId);
+      explainerCountdownId = null;
+      erklaerVideo.onended = null;
+      erklaerVideo.pause();
+      erklaerVideo.style.display = 'none';
+    }
+
+    // Startet den kompletten Ablauf – nur vom Startscreen aus, damit wiederholte
+    // Sensor-Signale (Wackelkontakt) ihn nicht neu starten.
+    function startStation4Flow() {
+      if (!screens.start.classList.contains('active')) {
+        ipadLog('startStation4Flow ignoriert (nicht im Startscreen)');
+        return;
+      }
+      stopDemo();
+      startExplainerCountdown();
+    }
+
+    function startExplainerCountdown() {
+      showScreen('video');
+      videoHint.textContent = '';
+      if (EXPLAINER_COUNTDOWN_S <= 0) { playExplainerVideo(); return; }
+
+      let remaining = EXPLAINER_COUNTDOWN_S;
+      ipadLog('Erklaer-Countdown startet (' + remaining + 's)');
+      videoCountdown.textContent = 'Erklärung startet in ' + remaining + ' s …';
+      clearInterval(explainerCountdownId);
+      explainerCountdownId = setInterval(() => {
+        remaining--;
+        if (remaining > 0) {
+          videoCountdown.textContent = 'Erklärung startet in ' + remaining + ' s …';
+        } else {
+          clearInterval(explainerCountdownId);
+          explainerCountdownId = null;
+          playExplainerVideo();
+        }
+      }, 1000);
+    }
+
+    function playExplainerVideo() {
+      ipadLog('playExplainerVideo() -> Erklaervideo startet');
+      videoCountdown.textContent = '';
+      erklaerVideo.style.display = 'block';
+      erklaerVideo.muted = true;      // iOS: muted ist zwingend fuer Autoplay
+      erklaerVideo.currentTime = 0;
+
+      // Wenn das Video zu Ende ist -> weiter zum Rake-Loop (2b)
+      erklaerVideo.onended = () => {
+        ipadLog('Erklaervideo zu Ende -> Rake-Loop (2b)');
+        hideExplainer();
+        startRakeLoop();
+      };
+
+      const p = erklaerVideo.play();
+      if (p !== undefined) {
+        p.then(() => ipadLog('✅ Erklaervideo play() OK'))
+         .catch(err => {
+           ipadLog('❌ Erklaervideo play() FEHLER: ' + err.name + ' – ' + err.message + ' (Bildschirm antippen)');
+           const resume = () => {
+             erklaerVideo.muted = true;
+             erklaerVideo.play().catch(() => {});
+             document.removeEventListener('touchend', resume);
+             document.removeEventListener('click', resume);
+           };
+           document.addEventListener('touchend', resume);
+           document.addEventListener('click', resume);
+         });
+      }
     }
 
     function showEnd(resultText, lose) {
@@ -499,12 +592,9 @@
       }
 
       // Abstandssensor-Signal 'e' vom Haupt-ESP: Person steht vor Station 4.
-      // Das ist der zuverlaessige Startpunkt (feuert immer, unabhaengig vom
-      // State-Automaten in index.html) -> Anleitungs-Loop "Rechen anheben"
-      // zeigen (Screen 2b). Laeuft, bis 'rake_lifted' kommt.
+      // Zuverlaessiger Startpunkt -> Ablauf: Countdown -> Erklaervideo -> Rake-Loop.
       if (ev.type === 'sensor' && ev.signal === 'e') {
-        stopDemo();
-        startRakeLoop();
+        startStation4Flow();
         return;
       }
 
@@ -785,10 +875,9 @@
     document.addEventListener('keydown', (e) => {
       if (e.key === 'e' || e.key === 'E') {
         // BLE-Tastatur der Station 4 sendet 'e', wenn der Abstandssensor
-        // ausloest -> gleiches Verhalten wie das SSE-'sensor'-Event:
-        // Anleitungs-Loop "Rechen anheben" starten (Screen 2b).
-        stopDemo();
-        startRakeLoop();
+        // ausloest -> gleicher Ablauf wie das SSE-'sensor'-Event:
+        // Countdown -> Erklaervideo -> Rake-Loop (2b).
+        startStation4Flow();
       }
     });
   </script>
