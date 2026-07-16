@@ -158,12 +158,45 @@
       // --- iPad-Anbindung -----------------------------------------------------
       // Schickt Spiel-Events an den lokalen Server (/event); der verteilt sie
       // per Server-Sent Events an alle verbundenen iPads (ipad.html).
+      // Ausfuehrliches Logging: jeder ans iPad gesendete State-Wechsel wird
+      // nummeriert, mit Zeit, Payload, Kontext und Zustell-Ergebnis in der
+      // Konsole (http://localhost:3000 -> DevTools -> Console) protokolliert.
+      let ipadEventSeq = 0;
+
       function sendIpadEvent(type, data = {}) {
-        fetch('/event', {
+        const seq = ++ipadEventSeq;
+        const t = new Date().toISOString().substr(11, 12); // HH:MM:SS.mmm
+        const payload = { type, ...data };
+
+        console.log(
+          `%c[iPad→ #${seq} ${t}] SENDE "${type}"`,
+          'color:#8ecbff;font-weight:bold;',
+          Object.keys(data).length ? data : '(keine Daten)'
+        );
+        console.log(
+          `[iPad→ #${seq}] Kontext: Station=${currentStation}` +
+          ` | station4State=${station4State} | gameState=${gameState}`
+        );
+
+        return fetch('/event', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ type, ...data }),
-        }).catch((e) => console.warn('[iPad-Event] nicht zustellbar:', e.message));
+          body: JSON.stringify(payload),
+        })
+          .then((res) => {
+            console.log(
+              `%c[iPad→ #${seq} ${t}] ${res.ok ? '✅ zugestellt' : '⚠️ HTTP ' + res.status} "${type}"`,
+              res.ok ? 'color:#2a9d2a;' : 'color:#ffb86b;'
+            );
+            return res;
+          })
+          .catch((e) => {
+            console.warn(
+              `%c[iPad→ #${seq} ${t}] ❌ NICHT zustellbar "${type}": ${e.message}`,
+              'color:#ff6b6b;font-weight:bold;'
+            );
+            console.warn('[iPad→] Laeuft node server.js? Ist das iPad auf /ipad.html verbunden?');
+          });
       }
 
       async function handleKnockCorrect() {

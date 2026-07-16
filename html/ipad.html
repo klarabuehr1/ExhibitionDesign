@@ -271,7 +271,33 @@
       videoDebug.textContent = msg;
       videoDebug.style.display = 'block';
     }
-    
+
+    // -------------------------------------------------------------------------
+    // iPad-Logging: schreibt in die (Remote-)Konsole UND schickt die Zeile an
+    // den Server (/log), damit sie im "node server.js"-Terminal sichtbar ist.
+    // -------------------------------------------------------------------------
+    let ipadLogSeq = 0;
+    function ipadLog(msg, obj) {
+      ipadLogSeq++;
+      const t = new Date().toISOString().substr(11, 12);
+      const line = `[iPad #${ipadLogSeq} ${t}] ${msg}` +
+                   (obj !== undefined ? ' ' + JSON.stringify(obj) : '');
+      console.log(line);
+      // Best effort ans Terminal spiegeln (Fehler ignorieren)
+      fetch('/log', {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain' },
+        body: line,
+      }).catch(() => {});
+    }
+
+    function currentScreenName() {
+      for (const [name, el] of Object.entries(screens)) {
+        if (el.classList.contains('active')) return name;
+      }
+      return '(keiner)';
+    }
+
     function playVideoOnIPad(videoEl) {
       updateVideoDebug(`▶ ${videoEl.id} wird gestartet...`);
       videoEl.currentTime = 0; // Zurück zum Anfang
@@ -292,21 +318,42 @@
     // Startet beim 'intro'-Event und laeuft, bis 'rake_lifted' kommt.
     const rakeLoopVideo = document.getElementById('rake-loop-video');
 
+    // Video-eigene Fehler-/Puffer-Ereignisse mitloggen
+    rakeLoopVideo.addEventListener('error', () => {
+      const err = rakeLoopVideo.error;
+      ipadLog('❌ rake-loop VIDEO-ERROR code=' + (err && err.code) + ' msg=' + (err && err.message));
+      updateVideoDebug('✗ Video-Fehler code ' + (err && err.code));
+    });
+    rakeLoopVideo.addEventListener('stalled',    () => ipadLog('⚠️ rake-loop stalled (Daten stocken)'));
+    rakeLoopVideo.addEventListener('waiting',    () => ipadLog('⚠️ rake-loop waiting (Buffering)'));
+    rakeLoopVideo.addEventListener('playing',    () => ipadLog('▶️ rake-loop playing-Event'));
+    rakeLoopVideo.addEventListener('loadeddata', () => ipadLog('📼 rake-loop loadeddata (erste Frames da)'));
+
     function startRakeLoop() {
+      ipadLog('startRakeLoop() -> zeige Screen "rake"');
       showScreen('rake');
       rakeLoopVideo.muted = true;      // iOS: muted ist zwingend fuer Autoplay
       rakeLoopVideo.loop = true;
       rakeLoopVideo.currentTime = 0;
+      ipadLog('rake-loop readyState=' + rakeLoopVideo.readyState +
+              ' networkState=' + rakeLoopVideo.networkState +
+              ' src=' + (rakeLoopVideo.currentSrc || '(leer)'));
       const p = rakeLoopVideo.play();
       if (p !== undefined) {
-        p.then(() => updateVideoDebug('✓ rake-loop spielt (Loop)'))
+        p.then(() => {
+           updateVideoDebug('✓ rake-loop spielt (Loop)');
+           ipadLog('✅ rake-loop play() OK (paused=' + rakeLoopVideo.paused + ')');
+         })
          .catch(err => {
            // Autoplay wurde blockiert (z.B. iOS Low Power Mode / kein Gesture).
            // Fallback: beim ersten Touch/Klick nachstarten.
            updateVideoDebug('✗ Autoplay blockiert: ' + err.message + ' – Bildschirm antippen');
+           ipadLog('❌ rake-loop play() FEHLER: ' + err.name + ' – ' + err.message);
            const resume = () => {
              rakeLoopVideo.muted = true;
-             rakeLoopVideo.play().catch(() => {});
+             rakeLoopVideo.play()
+               .then(() => ipadLog('✅ rake-loop nach Tap gestartet'))
+               .catch(() => {});
              document.removeEventListener('touchend', resume);
              document.removeEventListener('click', resume);
            };
@@ -317,6 +364,7 @@
     }
 
     function stopRakeLoop() {
+      ipadLog('stopRakeLoop()');
       rakeLoopVideo.pause();
     }
 
@@ -400,7 +448,10 @@
     };
 
     function handleRemoteEvent(ev) {
-      if (ev.type === 'connected') return;
+      if (ev.type === 'connected') { ipadLog('SSE verbunden (connected)'); return; }
+      if (ev.type !== 'status') {   // status floodet -> nicht loggen
+        ipadLog(`EMPFANGEN "${ev.type}" | aktiver Screen=${currentScreenName()}`, ev);
+      }
 
       // Live-Kamera-Status: nur Anzeige aktualisieren, kein Screen-Wechsel
       if (ev.type === 'status') {
@@ -485,12 +536,11 @@
       const es = new EventSource('/events');
       es.onopen  = () => {
         connDot.classList.add('online');
-        startStatus.textContent = 'Verbunden – warte auf Station 4 …';
+        ipadLog('SSE onopen – verbunden mit Station');
       };
       es.onerror = () => {
         connDot.classList.remove('online');
-        startStatus.textContent = 'Keine Verbindung zur Station …';
-        // EventSource verbindet sich automatisch neu
+        ipadLog('⚠️ SSE onerror – keine Verbindung (Auto-Reconnect laeuft)');
       };
       es.onmessage = (msg) => {
         try {

@@ -84,6 +84,19 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // iPad schickt hier seine Log-Zeilen hin -> im Terminal ausgeben.
+  // So sind die iPad-Logs sichtbar, ohne DevTools am iPad zu oeffnen.
+  if (req.url === "/log" && req.method === "POST") {
+    let body = "";
+    req.on("data", (chunk) => (body += chunk));
+    req.on("end", () => {
+      console.log("IPAD " + body);
+      res.writeHead(204);
+      res.end();
+    });
+    return;
+  }
+
   // URL dekodieren (z. B. Leerzeichen in Dateinamen)
   let urlPath = decodeURIComponent(req.url);
 
