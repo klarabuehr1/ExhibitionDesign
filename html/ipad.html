@@ -164,7 +164,7 @@
        im Admin-Screen das Event 'rake_lifted' schickt. Video ist stumm
        (Audio wird separat in index.html gehandhabt). -->
   <div id="screen-rake" class="screen" style="padding: 0;">
-    <video id="rake-loop-video" loop muted playsinline preload="auto"
+    <video id="rake-loop-video" autoplay loop muted playsinline preload="auto"
            style="position: absolute; inset: 0; width: 100vw; height: 100vh; object-fit: contain; background: #000;">
       <source src="Videos_Bilder_Station4/Rechen%20anheben.mp4" type="video/mp4">
     </video>
@@ -294,11 +294,25 @@
 
     function startRakeLoop() {
       showScreen('rake');
+      rakeLoopVideo.muted = true;      // iOS: muted ist zwingend fuer Autoplay
+      rakeLoopVideo.loop = true;
       rakeLoopVideo.currentTime = 0;
       const p = rakeLoopVideo.play();
       if (p !== undefined) {
         p.then(() => updateVideoDebug('✓ rake-loop spielt (Loop)'))
-         .catch(err => updateVideoDebug('✗ rake-loop Fehler: ' + err.message));
+         .catch(err => {
+           // Autoplay wurde blockiert (z.B. iOS Low Power Mode / kein Gesture).
+           // Fallback: beim ersten Touch/Klick nachstarten.
+           updateVideoDebug('✗ Autoplay blockiert: ' + err.message + ' – Bildschirm antippen');
+           const resume = () => {
+             rakeLoopVideo.muted = true;
+             rakeLoopVideo.play().catch(() => {});
+             document.removeEventListener('touchend', resume);
+             document.removeEventListener('click', resume);
+           };
+           document.addEventListener('touchend', resume);
+           document.addEventListener('click', resume);
+         });
       }
     }
 
@@ -395,25 +409,13 @@
         return;
       }
 
-      // Abstandssensor-Signal vom Haupt-ESP über Admin-Screen
+      // Abstandssensor-Signal 'e' vom Haupt-ESP: Person steht vor Station 4.
+      // Das ist der zuverlaessige Startpunkt (feuert immer, unabhaengig vom
+      // State-Automaten in index.html) -> Anleitungs-Loop "Rechen anheben"
+      // zeigen (Screen 2b). Laeuft, bis 'rake_lifted' kommt.
       if (ev.type === 'sensor' && ev.signal === 'e') {
-        // Nur im Startscreen: Sensor startet die Erklärung
-        if (screens.start.classList.contains('active')) {
-          demoActive = true;
-          showScreen('video');
-          videoHint.textContent = '';
-          let remaining = VIDEO_DURATION_S;
-          videoCountdown.textContent = `Erklärung lädt …`;
-          clearInterval(demoTimerId);
-          demoTimerId = setInterval(() => {
-            remaining--;
-            videoCountdown.textContent = `Spiel startet in ${remaining} s …`;
-            if (remaining <= 0) {
-              clearInterval(demoTimerId);
-              startDemoGame();
-            }
-          }, 1000);
-        }
+        stopDemo();
+        startRakeLoop();
         return;
       }
 
@@ -693,23 +695,11 @@
     // =========================================================================
     document.addEventListener('keydown', (e) => {
       if (e.key === 'e' || e.key === 'E') {
-        // Nur im Startscreen: Sensor startet die Erklärung
-        if (screens.start.classList.contains('active')) {
-          demoActive = true;
-          showScreen('video');
-          videoHint.textContent = '';
-          let remaining = VIDEO_DURATION_S;
-          videoCountdown.textContent = `Erklärung lädt …`;
-          clearInterval(demoTimerId);
-          demoTimerId = setInterval(() => {
-            remaining--;
-            videoCountdown.textContent = `Spiel startet in ${remaining} s …`;
-            if (remaining <= 0) {
-              clearInterval(demoTimerId);
-              startDemoGame();
-            }
-          }, 1000);
-        }
+        // BLE-Tastatur der Station 4 sendet 'e', wenn der Abstandssensor
+        // ausloest -> gleiches Verhalten wie das SSE-'sensor'-Event:
+        // Anleitungs-Loop "Rechen anheben" starten (Screen 2b).
+        stopDemo();
+        startRakeLoop();
       }
     });
   </script>
